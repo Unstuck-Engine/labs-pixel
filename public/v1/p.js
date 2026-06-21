@@ -398,6 +398,12 @@
 
   var eventQueue = [];
   var policy = null; // populated by /v1/config response
+  // Persisted fingerprint hash for this session. Computed once during
+  // bootstrap and shipped on every /v1/events POST so the backend can
+  // persist it on clickstream_events — required for the cross-customer
+  // cache key to actually work (was previously NULL on every clickstream
+  // row, breaking the moat).
+  var fingerprintHash = null;
 
   function shouldHold() {
     if (!waitForConsentAttr) return false;
@@ -415,6 +421,7 @@
       referrer: document.referrer || undefined,
       visit_count: visitCount,
       engagement_score: getEngagement(),
+      fingerprint_hash: fingerprintHash,
     };
     if (extra) {
       for (var k in extra) {
@@ -576,8 +583,10 @@
 
   // Fingerprint runs synchronously enough to be ready by the /v1/config
   // call. The promise lets us continue without blocking if Web Crypto is
-  // missing — we just send a null fingerprint.
+  // missing — we just send a null fingerprint. Stash on module scope so
+  // every subsequent rawSend() ships it on /v1/events too.
   sha256Hex(fingerprintInput()).then(function (fpHash) {
+    fingerprintHash = fpHash;
     return fetch(HOST + '/v1/config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
