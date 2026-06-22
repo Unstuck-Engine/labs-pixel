@@ -405,6 +405,30 @@
   // row, breaking the moat).
   var fingerprintHash = null;
 
+  // Script-side country fallback. Vercel rewrites to external URLs
+  // don't forward x-vercel-ip-* headers, so the EF can't read country
+  // from edge geo. We send what we can detect client-side via
+  // navigator.language ("en-US" -> "US"). Less accurate than IP-geo
+  // (a US user with UK browser settings reads as GB) but good enough
+  // to gate Vector + RB2B, both US-person-only vendors.
+  function detectCountryFromBrowser() {
+    try {
+      var langs = (navigator.languages && navigator.languages.length)
+        ? navigator.languages
+        : [navigator.language];
+      for (var i = 0; i < langs.length; i++) {
+        var l = langs[i];
+        if (!l) continue;
+        var parts = l.split('-');
+        if (parts.length >= 2 && parts[1].length === 2) {
+          return parts[1].toUpperCase();
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+  var browserCountry = detectCountryFromBrowser();
+
   function shouldHold() {
     if (!waitForConsentAttr) return false;
     if (policy && policy.wait_for_consent === false) return false;
@@ -422,6 +446,7 @@
       visit_count: visitCount,
       engagement_score: getEngagement(),
       fingerprint_hash: fingerprintHash,
+      browser_country: browserCountry,
     };
     if (extra) {
       for (var k in extra) {
@@ -600,6 +625,7 @@
         referrer: document.referrer || undefined,
         opt_out: false,
         consent: consentGranted ? 'granted' : 'absent',
+        browser_country: browserCountry,
       }),
     });
   }).then(function (r) { return r.json(); }).then(function (cfg) {
