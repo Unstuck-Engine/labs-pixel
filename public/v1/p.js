@@ -429,6 +429,20 @@
   }
   var browserCountry = detectCountryFromBrowser();
 
+  // Bot-classification signals for the backend classifier. navigator.webdriver
+  // is the single strongest headless tell (near-zero false positives); screen
+  // dims catch headless that spoofs a real UA (0x0 / 1x1 are pure automation
+  // artifacts). The EF treats both as optional inputs.
+  var isWebdriver = false;
+  try { isWebdriver = navigator.webdriver === true; } catch (e) {}
+  var screenW = null, screenH = null;
+  try {
+    if (window.screen) {
+      screenW = window.screen.width || null;
+      screenH = window.screen.height || null;
+    }
+  } catch (e) {}
+
   function shouldHold() {
     if (!waitForConsentAttr) return false;
     if (policy && policy.wait_for_consent === false) return false;
@@ -447,6 +461,9 @@
       engagement_score: getEngagement(),
       fingerprint_hash: fingerprintHash,
       browser_country: browserCountry,
+      webdriver: isWebdriver,
+      screen_w: screenW,
+      screen_h: screenH,
     };
     if (extra) {
       for (var k in extra) {
@@ -626,6 +643,9 @@
         opt_out: false,
         consent: consentGranted ? 'granted' : 'absent',
         browser_country: browserCountry,
+        webdriver: isWebdriver,
+        screen_w: screenW,
+        screen_h: screenH,
       }),
     });
   }).then(function (r) { return r.json(); }).then(function (cfg) {
