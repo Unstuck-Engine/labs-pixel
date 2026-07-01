@@ -573,10 +573,13 @@
   /*  Public API + identify (HEM hashing)                            */
   /* -------------------------------------------------------------- */
 
+  var lastIdentifiedEmail = null;
   function publicIdentify(email, traits) {
     if (!email) return;
     var lower = String(email).trim().toLowerCase();
-    if (!lower) return;
+    if (!lower || lower.indexOf('@') < 1) return;
+    if (lower === lastIdentifiedEmail) return; // dedup: form_field change + submit both fire
+    lastIdentifiedEmail = lower;
     var emailMd5 = md5(lower);
     sha256Hex(lower).then(function (emailSha256) {
       sendEvent('identify', {
@@ -655,6 +658,7 @@
   };
   window.Unstuck.page = function (properties) {
     if (policy && isExcluded(location.href, policy.excluded_urls)) return;
+    pageEnterTs = Date.now();
     applyPageEngagement(location.href);
     sendEvent('page_view', properties ? { properties: properties } : undefined);
   };
@@ -714,6 +718,8 @@
   // SPA page-view tracking via popstate + pushState/replaceState wrap.
   function spaPageView() {
     if (policy && isExcluded(location.href, policy.excluded_urls)) return;
+    sendExit();               // capture dwell of the page we're leaving
+    pageEnterTs = Date.now();  // reset timer for the new page
     applyPageEngagement(location.href);
     sendEvent('page_view', { spa: true });
   }
@@ -727,4 +733,51 @@
       return result;
     };
   });
+
+  /* -------------------------------------------------------------- */
+  /*  Dwell tracking (heartbeat + exit) — fills dwell_time_seconds     */
+  /* -------------------------------------------------------------- */
+
+  var pageEnterTs = Date.now();
+  function dwellSecs() { return Math.max(0, Math.round((Date.now() - pageEnterTs) / 1000)); }
+
+  // Periodic heartbeat while visible — keeps dwell fresh even if exit never lands.
+  setInterval(function () {
+    if (document.visibilityState === 'visible') {
+      sendEvent('heartbeat', { dwell_time_seconds: dwellSecs() });
+    }
+  }, 20000);
+
+  // Final dwell on leave. pagehide = reliable "gone"; visibilitychange->hidden
+  // covers mobile tab-away. rawSend uses keepalive so the POST survives unload.
+  var lastExitAt = 0;
+  function sendExit() {
+    var now = Date.now();
+    if (now - lastExitAt < 1000) return; // dedup rapid double-fire
+    lastExitAt = now;
+    sendEvent('exit', { dwell_time_seconds: dwellSecs() });
+  }
+  window.addEventListener('pagehide', sendExit);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') sendExit();
+  });
+
+  /* -------------------------------------------------------------- */
+  /*  Form capture hardening: email on change/blur (catches JS forms) */
+  /* -------------------------------------------------------------- */
+
+  // Next.js/SPA forms often submit via JS with no native 'submit' event, so the
+  // submit listener above misses them. Capture the email the moment the field
+  // changes/blurs — before the JS handler runs. Dedup lives in publicIdentify.
+  document.addEventListener('change', function (ev) {
+    try {
+      var el = ev.target;
+      if (!el || el.nodeName !== 'INPUT') return;
+      var type = (el.type || '').toLowerCase();
+      var name = (el.getAttribute('name') || '').toLowerCase();
+      if (type !== 'email' && name.indexOf('email') === -1) return;
+      var val = (el.value || '').trim();
+      if (val.indexOf('@') > 0) publicIdentify(val, { source: 'form_field' });
+    } catch (e) {}
+  }, true);
 })();
