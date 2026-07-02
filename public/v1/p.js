@@ -449,6 +449,28 @@
     return !consentGranted;
   }
 
+  // UTM capture — first-touch per session. Parsed from the landing URL once,
+  // persisted in sessionStorage so SPA navigation (which strips the query
+  // string) doesn't lose attribution. Sent with every event as body.utm;
+  // pixel-events-ingest already writes utm_source/... columns from it.
+  var UTM_KEY = '__unstuck_utm';
+  var sessionUtm = null;
+  try {
+    sessionUtm = JSON.parse(sessionStorage.getItem(UTM_KEY) || 'null');
+    if (!sessionUtm) {
+      var usp = new URLSearchParams(location.search);
+      var u = {};
+      ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'].forEach(function (k) {
+        var v = usp.get(k);
+        if (v) u[k] = v;
+      });
+      if (Object.keys(u).length) {
+        sessionUtm = u;
+        sessionStorage.setItem(UTM_KEY, JSON.stringify(u));
+      }
+    }
+  } catch (e) {}
+
   function rawSend(eventType, extra) {
     var body = {
       pixel_key: dataKey,
@@ -464,6 +486,7 @@
       webdriver: isWebdriver,
       screen_w: screenW,
       screen_h: screenH,
+      utm: sessionUtm || undefined,
     };
     if (extra) {
       for (var k in extra) {
@@ -789,15 +812,22 @@
   // Next.js/SPA forms often submit via JS with no native 'submit' event, so the
   // submit listener above misses them. Capture the email the moment the field
   // changes/blurs — before the JS handler runs. Dedup lives in publicIdentify.
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
   document.addEventListener('change', function (ev) {
     try {
       var el = ev.target;
-      if (!el || el.nodeName !== 'INPUT') return;
+      if (!el || (el.nodeName !== 'INPUT' && el.nodeName !== 'TEXTAREA')) return;
       var type = (el.type || '').toLowerCase();
+      if (type === 'password' || type === 'hidden') return;
       var name = (el.getAttribute('name') || '').toLowerCase();
-      if (type !== 'email' && name.indexOf('email') === -1) return;
       var val = (el.value || '').trim();
-      if (val.indexOf('@') > 0) publicIdentify(val, { source: 'form_field' });
+      // Capture by field type/name OR by VALUE — plain text inputs (e.g. a
+      // "linkedin.com/in/them or them@co" field) carry emails too. The typed
+      // value being a well-formed email is the signal, not the markup.
+      var fieldSaysEmail = type === 'email' || name.indexOf('email') !== -1;
+      if ((fieldSaysEmail && val.indexOf('@') > 0) || EMAIL_RE.test(val)) {
+        publicIdentify(val, { source: 'form_field', input_name: name || null });
+      }
     } catch (e) {}
   }, true);
 })();
