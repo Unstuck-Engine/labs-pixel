@@ -545,35 +545,48 @@
       } catch (e) {}
     } else if (vp.name === 'snitcher_radar') {
       try {
-        window.snitcher = window.snitcher || {};
-        window.snitcher.partnerId = vp.partner_id || '';
-        var rs = document.createElement('script');
-        rs.async = true;
-        rs.src =
-          'https://radar.snitcher.com/script/radar.js?id=' +
-          encodeURIComponent(vp.pixel_id || '');
-        rs.onload = function () {
-          // Snitcher Radar exposes a session_uuid we forward to the
-          // backend so vendor-merge-worker can call /company/find
-          // server-side later. Poll up to 5s for the global to appear.
-          var tries = 0;
-          var pollId = setInterval(function () {
-            tries++;
-            var sessionUuid =
-              (window.snitcher &&
-                (window.snitcher.sessionId || window.snitcher.session_uuid)) ||
-              null;
-            if (sessionUuid) {
-              clearInterval(pollId);
-              sendEvent('snitcher_session_captured', {
-                snitcher_session_uuid: sessionUuid,
-              });
-            } else if (tries >= 25) {
-              clearInterval(pollId);
-            }
-          }, 200);
+        // Real Radar loader contract (docs.snitcher.com -> powered-by-snitcher/
+        // radar/installation): a command-queue stub on window[namespace], then
+        // radar.min.js (loaded from the CDN) reads config from the script tag's
+        // data-settings attribute. The previous /script/radar.js?id= URL and
+        // window.snitcher.sessionId polling were guesses -- no such endpoints
+        // exist. Session correlation happens via the unstuck_link custom event
+        // below: the per-session webhook payload carries it inside events[],
+        // and vendor-webhook-snitcher digs out "<customer_id>|<vid>".
+        var rSettings = {
+          cdn: 'cdn.snitcher.com',
+          apiEndpoint: 'radar.snitcher.com',
+          profileId: vp.pixel_id || '',
+          namespace: 'UnstuckRadar',
+          waitForConsent: false,
+          features: { formTracking: true },
         };
-        document.head.appendChild(rs);
+        var rq = window.UnstuckRadar;
+        if (!rq || (!rq._loaded && !rq.initialized)) {
+          rq = window.UnstuckRadar = window.UnstuckRadar || [];
+          rq._loaded = true;
+          var rMethods = ['track', 'page', 'identify', 'group', 'alias',
+            'ready', 'on', 'off', 'once', 'register', 'reset',
+            'giveCookieConsent', 'pageview'];
+          for (var ri = 0; ri < rMethods.length; ri++) {
+            (function (m) {
+              rq[m] = function () {
+                var args = [].slice.call(arguments);
+                args.unshift(m);
+                rq.push(args);
+                return rq;
+              };
+            })(rMethods[ri]);
+          }
+          var rs = document.createElement('script');
+          rs.async = true;
+          rs.type = 'text/javascript';
+          rs.id = '__radar__';
+          rs.dataset.settings = JSON.stringify(rSettings);
+          rs.src = 'https://' + rSettings.cdn + '/releases/latest/radar.min.js';
+          document.head.appendChild(rs);
+          rq.track('unstuck_link', { unstuck: vp.partner_id || '' });
+        }
       } catch (e) {}
     }
   }
