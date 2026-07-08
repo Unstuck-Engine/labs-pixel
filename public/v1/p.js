@@ -588,11 +588,11 @@
           rq.track('unstuck_link', { unstuck: vp.partner_id || '' });
         }
       } catch (e) {}
-    } else if (vp.name === 'knock2') {
+    } else if (vp.name === 'knock2' || vp.name === 'leadpipe') {
       try {
-        // Knock2 person-level identification (embed from their GET /v1/script:
-        // a plain async script; pixel_id carries the tenant script URL).
-        // Identifications arrive server-side via vendor-webhook-knock2.
+        // Person-level identification vendors that inject a plain async
+        // script (pixel_id carries the vendor's script URL). Identifications
+        // arrive server-side: knock2 via webhook, leadpipe via poll cron.
         var ks = document.createElement('script');
         ks.async = true;
         ks.src = vp.pixel_id || '';
