@@ -1,33 +1,61 @@
 {
   "rewrites": [
-    { "source": "/v1/config",   "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/pixel-config-loader" },
-    { "source": "/v1/events",   "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/pixel-events-ingest" },
-    { "source": "/v1/identify", "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/cache-identity-enrichment" }
+    {
+      "source": "/v1/config",
+      "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/pixel-config-loader"
+    },
+    {
+      "source": "/v1/events",
+      "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/pixel-events-ingest"
+    },
+    {
+      "source": "/v1/identify",
+      "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/cache-identity-enrichment"
+    },
+    {
+      "source": "/v1/dashboard-data",
+      "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/deanon-dashboard"
+    }
   ],
   "headers": [
     {
       "source": "/v1/p.js",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=300, s-maxage=600" },
-        { "key": "Access-Control-Allow-Origin", "value": "*" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=300, s-maxage=600"
+        },
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
       ]
     },
     {
       "source": "/v1/config",
       "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" }
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
       ]
     },
     {
       "source": "/v1/events",
       "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" }
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
       ]
     },
     {
       "source": "/v1/identify",
       "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" }
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
       ]
     }
   ]

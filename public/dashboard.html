@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Deanon provider dashboard</title>
+<style>
+  :root{color-scheme:dark light}
+  body{font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;margin:0;padding:24px;background:#0b0e14;color:#e6e6e6}
+  h1{font-size:18px;margin:0 0 4px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#7fb2ff;margin:26px 0 6px}
+  .sub{color:#8a93a6;font-size:12px;margin-bottom:8px}
+  table{border-collapse:collapse;width:100%;max-width:780px;margin-bottom:6px}
+  th,td{text-align:left;padding:7px 12px;border-bottom:1px solid #1e2530}
+  th{color:#8a93a6;font-weight:600;font-size:12px}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  td.big{font-size:22px;font-weight:700}
+  .tag{font-size:11px;padding:1px 6px;border-radius:4px;background:#1e2530;color:#8a93a6}
+  .lead{color:#5fd08a;font-weight:600}
+  .note{color:#8a93a6;font-size:12px;max-width:780px;margin-top:4px}
+  .bar{display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+  button,select{background:#161b24;color:#e6e6e6;border:1px solid #2a3342;border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer}
+  #err{color:#ff8080}
+</style>
+</head>
+<body>
+<h1>Website-deanon — provider comparison</h1>
+<div class="bar">
+  <label>Window:
+    <select id="win">
+      <option value="">Since Leadpipe live</option>
+      <option value="hours=24">Last 24h</option>
+      <option value="hours=72">Last 72h</option>
+      <option value="hours=168">Last 7d</option>
+    </select>
+  </label>
+  <button id="refresh">Refresh</button>
+  <span class="sub" id="meta"></span>
+</div>
+<div id="err"></div>
+<div id="root"></div>
+
+<script>
+// All rendering via createElement + textContent — no innerHTML, no XSS surface.
+const N = (v) => (v == null ? '—' : String(v));
+
+function el(tag, opts, kids) {
+  const e = document.createElement(tag);
+  if (opts) {
+    if (opts.text != null) e.textContent = String(opts.text);
+    if (opts.cls) e.className = opts.cls;
+  }
+  (kids || []).forEach((k) => e.appendChild(k));
+  return e;
+}
+
+// rows: array of arrays; each cell = string/number OR {text, num, big, cls}
+function makeTable(headers, rows) {
+  const t = el('table');
+  const hr = el('tr');
+  headers.forEach((h, i) => hr.appendChild(el('th', { text: h, cls: i ? 'num' : '' })));
+  t.appendChild(hr);
+  rows.forEach((r) => {
+    const tr = el('tr');
+    r.forEach((c, i) => {
+      const cell = (c && typeof c === 'object') ? c : { text: c };
+      const classes = [];
+      if (cell.num || (i > 0 && cell.num !== false)) classes.push('num');
+      if (cell.big) classes.push('big');
+      if (cell.cls) classes.push(cell.cls);
+      tr.appendChild(el('td', { text: cell.text, cls: classes.join(' ') }));
+    });
+    t.appendChild(tr);
+  });
+  return t;
+}
+function section(title, sub) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(el('h2', { text: title }));
+  if (sub) frag.appendChild(el('div', { text: sub, cls: 'sub' }));
+  return frag;
+}
+
+async function load() {
+  const err = document.getElementById('err'); err.textContent = '';
+  const q = document.getElementById('win').value;
+  try {
+    const res = await fetch('/v1/dashboard-data' + (q ? '?' + q : ''), { headers: { accept: 'application/json' } });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    render(await res.json());
+  } catch (e) { err.textContent = 'Failed to load: ' + e.message; }
+}
+
+function render(d) {
+  const our = d.our || {}, our7 = d.our7 || {}, snit = d.snitcher || {}, pl = d.providers_live || {};
+  const person = d.person || [], company = d.company || [];
+  const vec = (person.find((p) => p.provider === 'vector') || {}).people || 0;
+  const P = (name) => person.find((p) => p.provider === name) || { provider: name, scope: (name === 'vector' || name === 'rb2b') ? 'US-only' : 'universal', people: 0, with_linkedin: 0 };
+  const C = (name) => company.find((c) => c.provider === name) || { provider: name, companies: 0, calls: 0 };
+
+  document.getElementById('meta').textContent =
+    'window ' + (d.since || '') + ' → now · generated ' + String(d.generated_at || '').slice(0, 19).replace('T', ' ') + ' UTC';
+
+  const root = document.getElementById('root');
+  root.textContent = '';
+
+  root.appendChild(section('Our traffic (pixel, human)'));
+  root.appendChild(makeTable(['Window', 'Visitors', 'US', 'Non-US', 'Geo unknown'], [
+    ['Since window start', { text: N(our.total), big: true }, N(our.us), N(our.non_us), N(our.unknown)],
+    ['Last 7 days', N(our7.total), N(our7.us), N(our7.non_us), '—'],
+  ]));
+
+  root.appendChild(section('Visitor reconciliation — do providers see the same traffic?',
+    'Each provider exposes a different visitor metric/window (labeled). Convergence toward our count = our tracking is sound.'));
+  root.appendChild(makeTable(['Source', 'Visitors', 'Metric / window'], [
+    [{ text: 'Us (ground truth)', cls: 'lead', num: false }, { text: N(our.total), big: true }, { text: 'distinct human visitors · this window', num: false }],
+    [{ text: 'Snitcher (Radar)', num: false }, N(snit.sessions_since), { text: 'Radar sessions received · this window', num: false }],
+    [{ text: 'Knock2', num: false }, N(pl.knock2_visitors_7d), { text: 'their visitor_count · fixed last-7d', num: false }],
+    [{ text: 'Leadpipe', num: false }, N(pl.leadpipe_identified_total), { text: 'identified visitors · all-time', num: false }],
+    [{ text: 'Vector', num: false }, N(vec), { text: 'identifications only (no total-visitor API)', num: false }],
+  ]));
+  root.appendChild(el('div', { text: 'Us vs Snitcher(Radar) is the true same-window apples-to-apples; Knock2/Leadpipe use their own fixed windows until they accumulate our-window history.', cls: 'note' }));
+
+  root.appendChild(section('Person providers — distinct people identified',
+    'Same window, same event = one distinct real person (email or /in/ LinkedIn). Deduped.'));
+  root.appendChild(makeTable(['Provider', 'Scope', 'People', 'With LinkedIn'],
+    ['vector', 'rb2b', 'knock2', 'leadpipe'].map((x) => { const p = P(x); return [{ text: p.provider, num: false }, { text: p.scope, cls: 'tag', num: false }, { text: N(p.people), big: true }, N(p.with_linkedin)]; })));
+
+  root.appendChild(section('Company providers — distinct companies identified',
+    'Same window; all three universal (no US limit). Event = one distinct company domain.'));
+  root.appendChild(makeTable(['Provider', 'Companies', 'Calls'],
+    ['snitcher', 'leadfeeder', 'rb2b'].map((x) => { const c = C(x); return [{ text: c.provider, num: false }, { text: N(c.companies), big: true }, N(c.calls)]; })));
+}
+
+document.getElementById('refresh').onclick = load;
+document.getElementById('win').onchange = load;
+load();
+setInterval(load, 120000);
+</script>
+</body>
+</html>
