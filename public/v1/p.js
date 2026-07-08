@@ -588,6 +588,16 @@
           rq.track('unstuck_link', { unstuck: vp.partner_id || '' });
         }
       } catch (e) {}
+    } else if (vp.name === 'knock2') {
+      try {
+        // Knock2 person-level identification (embed from their GET /v1/script:
+        // a plain async script; pixel_id carries the tenant script URL).
+        // Identifications arrive server-side via vendor-webhook-knock2.
+        var ks = document.createElement('script');
+        ks.async = true;
+        ks.src = vp.pixel_id || '';
+        if (ks.src) document.head.appendChild(ks);
+      } catch (e) {}
     }
   }
 
