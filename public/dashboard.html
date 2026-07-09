@@ -131,6 +131,22 @@ function render(d) {
     'Same window; all three universal (no US limit). Event = one distinct company domain.'));
   root.appendChild(makeTable(['Provider', 'Companies', 'Calls'],
     ['snitcher', 'leadfeeder', 'rb2b'].map((x) => { const c = C(x); return [{ text: c.provider, num: false }, { text: N(c.companies), big: true }, N(c.calls)]; })));
+
+  // Cross-provider confidence — the real ground truth (agreement, not IP).
+  const conf = d.confidence || [], top = d.confidence_top || [];
+  const cf = (k) => conf.find((c) => c.kind === k) || { cross_confirmed: 0, single_source: 0 };
+  root.appendChild(section('Cross-provider confidence — agreement, not IP heuristics',
+    'Entity = distinct person (email/LinkedIn) or company (domain). Cross-confirmed = 2+ INDEPENDENT providers resolved the SAME entity (enriched/cache excluded). This — not IP or any single oracle — is ground truth.'));
+  root.appendChild(makeTable(['Entity', 'Cross-confirmed (2+)', 'Single-source (1)'], [
+    [{ text: 'Person', num: false }, { text: N(cf('person').cross_confirmed), big: true }, N(cf('person').single_source)],
+    [{ text: 'Company', num: false }, { text: N(cf('company').cross_confirmed), big: true }, N(cf('company').single_source)],
+  ]));
+  if (top.length) {
+    root.appendChild(makeTable(['Confirmed entity', 'Confirmed by'],
+      top.map((t) => [{ text: t.label, num: false }, { text: (t.providers || []).join(' + '), num: false }])));
+  } else {
+    root.appendChild(el('div', { cls: 'note', text: 'No entity yet confirmed by 2+ independent providers. At current volume the providers are ADDITIVE — each catches different people/companies, with no overlap to triangulate. Agreement-based truth needs more traffic; until then a single resolved named person is the strongest confidence signal, and IP heuristics are NOT a substitute (they false-positive real corporate-cloud humans).' }));
+  }
 }
 
 document.getElementById('refresh').onclick = load;
