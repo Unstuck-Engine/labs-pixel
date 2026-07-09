@@ -4,155 +4,165 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Deanon provider dashboard</title>
+<title>Deanon dashboard</title>
 <style>
   :root{color-scheme:dark light}
-  body{font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;margin:0;padding:24px;background:#0b0e14;color:#e6e6e6}
-  h1{font-size:18px;margin:0 0 4px}
-  h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#7fb2ff;margin:26px 0 6px}
-  .sub{color:#8a93a6;font-size:12px;margin-bottom:8px}
-  table{border-collapse:collapse;width:100%;max-width:780px;margin-bottom:6px}
-  th,td{text-align:left;padding:7px 12px;border-bottom:1px solid #1e2530}
-  th{color:#8a93a6;font-weight:600;font-size:12px}
+  body{font:13px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;margin:0;padding:22px;background:#0b0e14;color:#e6e6e6}
+  h1{font-size:18px;margin:0 0 2px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#7fb2ff;margin:26px 0 6px}
+  .sub{color:#8a93a6;font-size:12px;margin-bottom:8px;max-width:820px}
+  table{border-collapse:collapse;margin-bottom:6px;max-width:900px}
+  th,td{text-align:left;padding:6px 11px;border-bottom:1px solid #1e2530;white-space:nowrap}
+  th{color:#8a93a6;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
   td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
-  td.big{font-size:22px;font-weight:700}
-  .tag{font-size:11px;padding:1px 6px;border-radius:4px;background:#1e2530;color:#8a93a6}
+  td.big{font-size:18px;font-weight:700}
+  td.zero{color:#3a4353}
+  .tag{font-size:11px;padding:1px 6px;border-radius:4px;background:#1e2530;color:#9aa4b6}
   .lead{color:#5fd08a;font-weight:600}
-  .note{color:#8a93a6;font-size:12px;max-width:780px;margin-top:4px}
-  .bar{display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
-  button,select{background:#161b24;color:#e6e6e6;border:1px solid #2a3342;border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer}
-  #err{color:#ff8080}
+  .note{color:#8a93a6;font-size:12px;max-width:820px;margin-top:4px}
+  .bar{display:flex;gap:10px;align-items:center;margin-bottom:4px;flex-wrap:wrap}
+  select,button{background:#161b24;color:#e6e6e6;border:1px solid #2a3342;border-radius:6px;padding:5px 9px;font:inherit;cursor:pointer}
+  label{color:#8a93a6;font-size:12px}
+  #err{color:#ff8080;margin:6px 0}
+  #meta{color:#8a93a6;font-size:11px}
+  .person{color:#8fd0ff}.company{color:#c9a227}
 </style>
 </head>
 <body>
-<h1>Website-deanon — provider comparison</h1>
+<h1>Website-deanon dashboard</h1>
 <div class="bar">
-  <label>Window:
-    <select id="win">
-      <option value="">Since Leadpipe live</option>
-      <option value="hours=24">Last 24h</option>
-      <option value="hours=72">Last 72h</option>
-      <option value="hours=168">Last 7d</option>
+  <label>Range
+    <select id="range">
+      <option value="1">Today (24h)</option>
+      <option value="7" selected>7 days</option>
+      <option value="30">30 days</option>
+      <option value="365">Since IP-fix</option>
+    </select>
+  </label>
+  <label>Timezone
+    <select id="tz">
+      <option value="America/Los_Angeles" selected>PST</option>
+      <option value="GMT">GMT</option>
+      <option value="UTC">UTC</option>
     </select>
   </label>
   <button id="refresh">Refresh</button>
-  <span class="sub" id="meta"></span>
+  <span id="meta"></span>
 </div>
+<div class="sub">Data starts at the IP-capture-fix epoch — earlier IP-based results were garbage and were purged.</div>
 <div id="err"></div>
 <div id="root"></div>
 
 <script>
-// All rendering via createElement + textContent — no innerHTML, no XSS surface.
-const N = (v) => (v == null ? '—' : String(v));
+// Pure DOM render — no innerHTML.
+const PROVIDERS = ['vector','rb2b','knock2','leadpipe','snitcher','leadfeeder','albacross'];
+const N = (v) => (v==null ? '—' : String(v));
 
-function el(tag, opts, kids) {
-  const e = document.createElement(tag);
-  if (opts) {
-    if (opts.text != null) e.textContent = String(opts.text);
-    if (opts.cls) e.className = opts.cls;
-  }
-  (kids || []).forEach((k) => e.appendChild(k));
+function el(tag, opts, kids){
+  const e=document.createElement(tag);
+  if(opts){ if(opts.text!=null) e.textContent=String(opts.text); if(opts.cls) e.className=opts.cls; }
+  (kids||[]).forEach(k=>e.appendChild(k));
   return e;
 }
-
-// rows: array of arrays; each cell = string/number OR {text, num, big, cls}
-function makeTable(headers, rows) {
-  const t = el('table');
-  const hr = el('tr');
-  headers.forEach((h, i) => hr.appendChild(el('th', { text: h, cls: i ? 'num' : '' })));
+function makeTable(headers, rows){
+  const t=el('table'), hr=el('tr');
+  headers.forEach((h,i)=>hr.appendChild(el('th',{text:(h&&h.text!=null)?h.text:h, cls:((h&&h.num)||i>0&&!(h&&h.num===false))?'num':''})));
   t.appendChild(hr);
-  rows.forEach((r) => {
-    const tr = el('tr');
-    r.forEach((c, i) => {
-      const cell = (c && typeof c === 'object') ? c : { text: c };
-      const classes = [];
-      if (cell.num || (i > 0 && cell.num !== false)) classes.push('num');
-      if (cell.big) classes.push('big');
-      if (cell.cls) classes.push(cell.cls);
-      tr.appendChild(el('td', { text: cell.text, cls: classes.join(' ') }));
-    });
-    t.appendChild(tr);
-  });
+  rows.forEach(r=>{ const tr=el('tr');
+    r.forEach((c,i)=>{ const cell=(c&&typeof c==='object')?c:{text:c};
+      const cl=[]; if(cell.num||(i>0&&cell.num!==false)) cl.push('num'); if(cell.big) cl.push('big');
+      if((cell.text===0||cell.text==='0')&&cell.dimZero!==false) cl.push('zero'); if(cell.cls) cl.push(cell.cls);
+      tr.appendChild(el('td',{text:cell.text,cls:cl.join(' ')})); });
+    t.appendChild(tr); });
   return t;
 }
-function section(title, sub) {
-  const frag = document.createDocumentFragment();
-  frag.appendChild(el('h2', { text: title }));
-  if (sub) frag.appendChild(el('div', { text: sub, cls: 'sub' }));
-  return frag;
+function section(title, sub){
+  const f=document.createDocumentFragment();
+  f.appendChild(el('h2',{text:title}));
+  if(sub) f.appendChild(el('div',{text:sub,cls:'sub'}));
+  return f;
 }
 
-async function load() {
-  const err = document.getElementById('err'); err.textContent = '';
-  const q = document.getElementById('win').value;
-  try {
-    const res = await fetch('/v1/dashboard-data' + (q ? '?' + q : ''), { headers: { accept: 'application/json' } });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+async function load(){
+  const err=document.getElementById('err'); err.textContent='';
+  const range=document.getElementById('range').value, tz=document.getElementById('tz').value;
+  try{
+    const res=await fetch(`/v1/dashboard-data?days=${range}&tz=${encodeURIComponent(tz)}`,{headers:{accept:'application/json'}});
+    if(!res.ok) throw new Error('HTTP '+res.status);
     render(await res.json());
-  } catch (e) { err.textContent = 'Failed to load: ' + e.message; }
+  }catch(e){ err.textContent='Failed to load: '+e.message; }
 }
 
-function render(d) {
-  const our = d.our || {}, our7 = d.our7 || {}, snit = d.snitcher || {}, pl = d.providers_live || {};
-  const person = d.person || [], company = d.company || [];
-  const vec = (person.find((p) => p.provider === 'vector') || {}).people || 0;
-  const P = (name) => person.find((p) => p.provider === name) || { provider: name, scope: (name === 'vector' || name === 'rb2b') ? 'US-only' : 'universal', people: 0, with_linkedin: 0 };
-  const C = (name) => company.find((c) => c.provider === name) || { provider: name, companies: 0, calls: 0 };
-
+function render(d){
   document.getElementById('meta').textContent =
-    'window ' + (d.since || '') + ' → now · generated ' + String(d.generated_at || '').slice(0, 19).replace('T', ' ') + ' UTC';
+    'window '+String(d.from||'').slice(0,10)+' → '+String(d.to||'').slice(0,10)+' · '+(d.tz||'')+' · generated '+String(d.generated_at||'').slice(11,19)+' UTC';
+  const root=document.getElementById('root'); root.textContent='';
 
-  const root = document.getElementById('root');
-  root.textContent = '';
+  // 1. DAILY ACTIVITY (days × providers, identifications)
+  const daily=d.daily||[]; const cell={}; daily.forEach(r=>cell[r.day+'|'+r.provider]=r.n);
+  const days=[...new Set(daily.map(r=>r.day))].sort().reverse();
+  root.appendChild(section('Daily activity — identifications per provider','One distinct identity written per provider, per day (selected timezone). Company + person layers.'));
+  if(days.length){
+    const colTot={}; PROVIDERS.forEach(p=>colTot[p]=0);
+    const rows=days.map(day=>{
+      let dayTot=0;
+      const cells=PROVIDERS.map(p=>{ const v=cell[day+'|'+p]||0; colTot[p]+=v; dayTot+=v; return {text:v||0}; });
+      return [{text:day,num:false}, ...cells, {text:dayTot,big:true}];
+    });
+    rows.push([{text:'TOTAL',num:false,cls:'lead'}, ...PROVIDERS.map(p=>({text:colTot[p],cls:'lead'})), {text:PROVIDERS.reduce((a,p)=>a+colTot[p],0),cls:'lead'}]);
+    root.appendChild(makeTable([{text:'Day',num:false}, ...PROVIDERS.map(p=>({text:p})), {text:'Total'}], rows));
+  } else root.appendChild(el('div',{cls:'note',text:'No identifications in this window.'}));
 
-  root.appendChild(section('Our traffic (pixel, human)'));
-  root.appendChild(makeTable(['Window', 'Visitors', 'US', 'Non-US', 'Geo unknown'], [
-    ['Since window start', { text: N(our.total), big: true }, N(our.us), N(our.non_us), N(our.unknown)],
-    ['Last 7 days', N(our7.total), N(our7.us), N(our7.non_us), '—'],
+  // 2. PROVIDER FUNNEL
+  root.appendChild(section('Provider funnel — why each number is what it is','Input → calls → billed (200-with-data) → matched. A 0 usually means no input, not failure. Pixel providers push (no calls we make).'));
+  const fp=d.funnel_person||[], fc=d.funnel_company||[];
+  const P=(arr,name)=>arr.find(x=>x.provider===name)||{};
+  root.appendChild(el('div',{cls:'sub',text:'Person providers'}));
+  root.appendChild(makeTable([{text:'Provider',num:false},{text:'Calls'},{text:'Billed'},{text:'People'}],
+    ['vector','rb2b','knock2','leadpipe'].map(p=>{const r=P(fp,p);return [{text:p,num:false},N(r.calls),N(r.billed),{text:r.people??0,big:true}];})));
+  root.appendChild(el('div',{cls:'sub',text:'Company providers (all universal — no US limit)'}));
+  root.appendChild(makeTable([{text:'Provider',num:false},{text:'Calls'},{text:'Billed'},{text:'Companies'},{text:'Match %'}],
+    ['snitcher','leadfeeder','rb2b','albacross'].map(p=>{const r=P(fc,p);const calls=r.calls||0,m=r.matched||0;
+      return [{text:p,num:false},{text:calls||0},N(r.billed),{text:m,big:true},{text:calls?Math.round(100*m/calls)+'%':'—',num:true}];})));
+
+  // 3. OUR TRAFFIC + RECONCILIATION
+  const our=d.our||{}, snit=d.snitcher||{}, pl=d.providers_live||{};
+  const vecPeople=(P(fp,'vector').people)||0;
+  root.appendChild(section('Our traffic + provider reconciliation','Our human visitors vs each provider’s own count (different metrics/windows, labeled). Convergence = our tracking is sound.'));
+  root.appendChild(makeTable([{text:'Source',num:false},{text:'Count'},{text:'Metric',num:false}],[
+    [{text:'Us — human visitors',cls:'lead',num:false},{text:our.total??0,big:true},{text:`US ${N(our.us)} · non-US ${N(our.non_us)} · unknown ${N(our.unknown)}`,num:false}],
+    [{text:'Snitcher (Radar)',num:false},{text:N(snit.sessions_since)},{text:'sessions received · this window',num:false}],
+    [{text:'Knock2',num:false},{text:N(pl.knock2_visitors_7d)},{text:'their visitor_count · fixed 7d',num:false}],
+    [{text:'Leadpipe',num:false},{text:N(pl.leadpipe_identified_total)},{text:'identified · all-time',num:false}],
+    [{text:'Vector',num:false},{text:vecPeople},{text:'identifications only',num:false}],
   ]));
 
-  root.appendChild(section('Visitor reconciliation — do providers see the same traffic?',
-    'Each provider exposes a different visitor metric/window (labeled). Convergence toward our count = our tracking is sound.'));
-  root.appendChild(makeTable(['Source', 'Visitors', 'Metric / window'], [
-    [{ text: 'Us (ground truth)', cls: 'lead', num: false }, { text: N(our.total), big: true }, { text: 'distinct human visitors · this window', num: false }],
-    [{ text: 'Snitcher (Radar)', num: false }, N(snit.sessions_since), { text: 'Radar sessions received · this window', num: false }],
-    [{ text: 'Knock2', num: false }, N(pl.knock2_visitors_7d), { text: 'their visitor_count · fixed last-7d', num: false }],
-    [{ text: 'Leadpipe', num: false }, N(pl.leadpipe_identified_total), { text: 'identified visitors · all-time', num: false }],
-    [{ text: 'Vector', num: false }, N(vec), { text: 'identifications only (no total-visitor API)', num: false }],
+  // 4. IDENTITY FEED
+  const feed=d.feed||[];
+  root.appendChild(section('Identity feed — who we actually identified','Most recent resolved entities (person or company), newest first.'));
+  if(feed.length){
+    root.appendChild(makeTable([{text:'Time',num:false},{text:'Type',num:false},{text:'Who',num:false},{text:'Company',num:false},{text:'Provider',num:false}],
+      feed.slice(0,30).map(f=>[{text:f.t,num:false},{text:f.layer,num:false,cls:f.layer},{text:f.who,num:false},{text:f.layer==='company'?'':(f.company||''),num:false},{text:f.provider,num:false}])));
+  } else root.appendChild(el('div',{cls:'note',text:'No identities in this window.'}));
+
+  // 5. CROSS-PROVIDER CONFIDENCE
+  const conf=d.confidence||[], top=d.confidence_top||[];
+  const cf=(k)=>conf.find(c=>c.kind===k)||{cross_confirmed:0,single_source:0};
+  root.appendChild(section('Cross-provider confidence — agreement, not IP heuristics','Entity = distinct person (email/LinkedIn) or company (domain). Cross-confirmed = 2+ INDEPENDENT providers found the SAME entity. This is ground truth.'));
+  root.appendChild(makeTable([{text:'Entity',num:false},{text:'Cross-confirmed (2+)'},{text:'Single-source (1)'}],[
+    [{text:'Person',num:false},{text:cf('person').cross_confirmed,big:true},N(cf('person').single_source)],
+    [{text:'Company',num:false},{text:cf('company').cross_confirmed,big:true},N(cf('company').single_source)],
   ]));
-  root.appendChild(el('div', { text: 'Us vs Snitcher(Radar) is the true same-window apples-to-apples; Knock2/Leadpipe use their own fixed windows until they accumulate our-window history.', cls: 'note' }));
-
-  root.appendChild(section('Person providers — distinct people identified',
-    'Same window, same event = one distinct real person (email or /in/ LinkedIn). Deduped.'));
-  root.appendChild(makeTable(['Provider', 'Scope', 'People', 'With LinkedIn'],
-    ['vector', 'rb2b', 'knock2', 'leadpipe'].map((x) => { const p = P(x); return [{ text: p.provider, num: false }, { text: p.scope, cls: 'tag', num: false }, { text: N(p.people), big: true }, N(p.with_linkedin)]; })));
-
-  root.appendChild(section('Company providers — distinct companies identified',
-    'Same window; all three universal (no US limit). Event = one distinct company domain.'));
-  root.appendChild(makeTable(['Provider', 'Companies', 'Calls'],
-    ['snitcher', 'leadfeeder', 'rb2b'].map((x) => { const c = C(x); return [{ text: c.provider, num: false }, { text: N(c.companies), big: true }, N(c.calls)]; })));
-
-  // Cross-provider confidence — the real ground truth (agreement, not IP).
-  const conf = d.confidence || [], top = d.confidence_top || [];
-  const cf = (k) => conf.find((c) => c.kind === k) || { cross_confirmed: 0, single_source: 0 };
-  root.appendChild(section('Cross-provider confidence — agreement, not IP heuristics',
-    'Entity = distinct person (email/LinkedIn) or company (domain). Cross-confirmed = 2+ INDEPENDENT providers resolved the SAME entity (enriched/cache excluded). This — not IP or any single oracle — is ground truth.'));
-  root.appendChild(makeTable(['Entity', 'Cross-confirmed (2+)', 'Single-source (1)'], [
-    [{ text: 'Person', num: false }, { text: N(cf('person').cross_confirmed), big: true }, N(cf('person').single_source)],
-    [{ text: 'Company', num: false }, { text: N(cf('company').cross_confirmed), big: true }, N(cf('company').single_source)],
-  ]));
-  if (top.length) {
-    root.appendChild(makeTable(['Confirmed entity', 'Confirmed by'],
-      top.map((t) => [{ text: t.label, num: false }, { text: (t.providers || []).join(' + '), num: false }])));
-  } else {
-    root.appendChild(el('div', { cls: 'note', text: 'No entity yet confirmed by 2+ independent providers. At current volume the providers are ADDITIVE — each catches different people/companies, with no overlap to triangulate. Agreement-based truth needs more traffic; until then a single resolved named person is the strongest confidence signal, and IP heuristics are NOT a substitute (they false-positive real corporate-cloud humans).' }));
-  }
+  if(top.length) root.appendChild(makeTable([{text:'Confirmed entity',num:false},{text:'Confirmed by',num:false}],
+    top.map(t=>[{text:t.label,num:false},{text:(t.providers||[]).join(' + '),num:false}])));
+  else root.appendChild(el('div',{cls:'note',text:'No entity yet confirmed by 2+ independent providers — at this volume the providers are ADDITIVE (each catches different people), so agreement-based truth needs more traffic. A single resolved named person is the strongest signal; IP heuristics are NOT a substitute (they false-positive real corporate-cloud humans).'}));
 }
 
-document.getElementById('refresh').onclick = load;
-document.getElementById('win').onchange = load;
+document.getElementById('refresh').onclick=load;
+document.getElementById('range').onchange=load;
+document.getElementById('tz').onchange=load;
 load();
-setInterval(load, 120000);
+setInterval(load,120000);
 </script>
 </body>
 </html>
