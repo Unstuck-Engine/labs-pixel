@@ -14,7 +14,7 @@
     },
     {
       "source": "/v1/dashboard-data",
-      "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/deanon-dashboard"
+      "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/website-intent-dashboard"
     }
   ],
   "headers": [
