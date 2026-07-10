@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Deanon dashboard</title>
+<title>Website intent dashboard</title>
 <style>
   :root{color-scheme:dark light}
   body{font:13px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;margin:0;padding:22px;background:#0b0e14;color:#e6e6e6}
@@ -29,7 +29,7 @@
 </style>
 </head>
 <body>
-<h1>Website-deanon dashboard</h1>
+<h1>Website intent dashboard</h1>
 <div class="bar">
   <label>Range
     <select id="range">
@@ -87,16 +87,51 @@ async function load(){
   const err=document.getElementById('err'); err.textContent='';
   const range=document.getElementById('range').value, tz=document.getElementById('tz').value;
   try{
-    const res=await fetch(`/v1/dashboard-data?days=${range}&tz=${encodeURIComponent(tz)}`,{headers:{accept:'application/json'}});
+    const [res, vres]=await Promise.all([
+      fetch(`/v1/dashboard-data?days=${range}&tz=${encodeURIComponent(tz)}`,{headers:{accept:'application/json'}}),
+      fetch(`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}`,{headers:{accept:'application/json'}}),
+    ]);
     if(!res.ok) throw new Error('HTTP '+res.status);
-    render(await res.json());
+    const visits = vres.ok ? (await vres.json()).rows||[] : [];
+    render(await res.json(), visits, range, tz);
   }catch(e){ err.textContent='Failed to load: '+e.message; }
 }
 
-function render(d){
+// Compact cell values for the matrix: bare domain as-is, LinkedIn URLs by
+// their /in/<slug>, 'no_match' as a dim ×, absent as blank.
+function cellVal(v){
+  if(v==null) return {text:'',num:false};
+  if(v==='no_match') return {text:'×',num:false,cls:'zero'};
+  const m=String(v).match(/linkedin\.com\/in\/([^\/?#]+)/i);
+  return {text:m?m[1]:String(v),num:false};
+}
+
+function render(d, visits, range, tz){
   document.getElementById('meta').textContent =
     'window '+String(d.from||'').slice(0,10)+' → '+String(d.to||'').slice(0,10)+' · '+(d.tz||'')+' · generated '+String(d.generated_at||'').slice(11,19)+' UTC';
   const root=document.getElementById('root'); root.textContent='';
+
+  // 0. PER-VISIT MATRIX (human visits × providers) + CSV export
+  const VCOLS=['snitcher','albacross','leadfeeder','rb2b','vector','knock2','leadpipe'];
+  const PCOLS=['rb2b_p','vector_p','knock2_p','leadpipe_p'];
+  root.appendChild(section('Per-visit matrix — every provider answer per human visit',
+    'One row per visit (vid+session). Company columns show the matched domain; person columns the matched person. × = paid provider answered with no match; blank = provider never answered.'));
+  const dl=el('a',{text:'⬇ Download CSV (full)',cls:'tag'});
+  dl.href=`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}&format=csv`;
+  dl.style.textDecoration='none';
+  root.appendChild(dl);
+  if(visits.length){
+    root.appendChild(makeTable(
+      [{text:'Time',num:false},{text:'IP',num:false},{text:'Pages'},{text:'Dwell s'},
+       ...VCOLS.map(c=>({text:c,num:false})), ...PCOLS.map(c=>({text:c,num:false}))],
+      visits.slice(0,100).map(v=>[
+        {text:String(v.timecode||'').slice(5,16).replace('T',' '),num:false},
+        {text:v.ip||'',num:false},
+        {text:v.pageviews??''},{text:v.dwell_seconds??''},
+        ...VCOLS.map(c=>cellVal(v[c])), ...PCOLS.map(c=>cellVal(v[c])),
+      ])));
+    if(visits.length>100) root.appendChild(el('div',{cls:'note',text:`Showing 100 of ${visits.length} visits — CSV has all rows.`}));
+  } else root.appendChild(el('div',{cls:'note',text:'No human visits in this window.'}));
 
   // 1. DAILY ACTIVITY (days × providers, identifications)
   const daily=d.daily||[]; const cell={}; daily.forEach(r=>cell[r.day+'|'+r.provider]=r.n);
