@@ -115,18 +115,22 @@ function render(d, visits, range, tz){
   const VCOLS=['snitcher','albacross','leadfeeder','rb2b','vector','knock2','leadpipe'];
   const PCOLS=['rb2b_p','vector_p','knock2_p','leadpipe_p'];
   root.appendChild(section('Per-visit matrix — every provider answer per human visit',
-    'One row per visit (vid+session). Company columns show the matched domain; person columns the matched person. × = paid provider answered with no match; blank = provider never answered.'));
+    '"Human" = our user-agent classifier (bots faking real browsers pass it — check IP class). IP class = free rDNS/ASN verdict; snit/lf type = Snitcher business|isp / Leadfeeder company|shared_network for that IP. Company columns show the matched domain; person columns the matched person. × = provider answered with no match; blank = provider never answered. Time on site = seconds between first and last pageview of the visit.'));
   const dl=el('a',{text:'⬇ Download CSV (full)',cls:'tag'});
   dl.href=`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}&format=csv`;
   dl.style.textDecoration='none';
   root.appendChild(dl);
   if(visits.length){
     root.appendChild(makeTable(
-      [{text:'Time',num:false},{text:'IP',num:false},{text:'Pages'},{text:'Dwell s'},
+      [{text:'Time',num:false},{text:'IP',num:false},{text:'IP class',num:false},{text:'Snit type',num:false},{text:'LF type',num:false},
+       {text:'Pages'},{text:'Time on site, s'},
        ...VCOLS.map(c=>({text:c,num:false})), ...PCOLS.map(c=>({text:c,num:false}))],
       visits.slice(0,100).map(v=>[
         {text:String(v.timecode||'').slice(5,16).replace('T',' '),num:false},
         {text:v.ip||'',num:false},
+        {text:v.ip_class||'',num:false,cls:(v.ip_class==='hosting'||v.ip_class==='bot')?'zero':''},
+        {text:v.snitcher_type||'',num:false},
+        {text:(v.leadfeeder_type==='shared_network'?'shared':v.leadfeeder_type)||'',num:false},
         {text:v.pageviews??''},{text:v.dwell_seconds??''},
         ...VCOLS.map(c=>cellVal(v[c])), ...PCOLS.map(c=>cellVal(v[c])),
       ])));
