@@ -83,6 +83,9 @@ function section(title, sub){
   return f;
 }
 
+let lastData=null, lastVisits=[], lastRange='7', lastTz='UTC';
+const matrixFilters={ip_class:'', snitcher_type:'', leadfeeder_type:''};
+
 async function load(){
   const err=document.getElementById('err'); err.textContent='';
   const range=document.getElementById('range').value, tz=document.getElementById('tz').value;
@@ -92,9 +95,34 @@ async function load(){
       fetch(`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}`,{headers:{accept:'application/json'}}),
     ]);
     if(!res.ok) throw new Error('HTTP '+res.status);
-    const visits = vres.ok ? (await vres.json()).rows||[] : [];
-    render(await res.json(), visits, range, tz);
+    lastData=await res.json(); lastVisits=vres.ok ? (await vres.json()).rows||[] : []; lastRange=range; lastTz=tz;
+    render(lastData, lastVisits, range, tz);
   }catch(e){ err.textContent='Failed to load: '+e.message; }
+}
+
+// Matrix filter row: one select per classification dimension, options from
+// the loaded rows' distinct values ('(blank)' matches empty cells).
+function filterSelect(field, label, rows){
+  const wrap=el('label',{text:label+' '});
+  const sel=document.createElement('select');
+  const vals=[...new Set(rows.map(r=>r[field]||''))].sort();
+  [['','all'],...vals.map(v=>[v||'__blank', v||'(blank)'])].forEach(([val,txt])=>{
+    const o=document.createElement('option'); o.value=val; o.textContent=txt;
+    if(val===matrixFilters[field]) o.selected=true;
+    sel.appendChild(o);
+  });
+  sel.onchange=()=>{ matrixFilters[field]=sel.value; if(lastData) render(lastData,lastVisits,lastRange,lastTz); };
+  wrap.appendChild(sel);
+  return wrap;
+}
+function matrixFilterPass(r){
+  for(const f of ['ip_class','snitcher_type','leadfeeder_type']){
+    const want=matrixFilters[f];
+    if(!want) continue;
+    const have=r[f]||'';
+    if(want==='__blank' ? have!=='' : have!==want) return false;
+  }
+  return true;
 }
 
 // Compact cell values for the matrix: bare domain as-is, LinkedIn URLs by
@@ -103,7 +131,7 @@ function cellVal(v){
   if(v==null) return {text:'',num:false};
   if(v==='no_match') return {text:'×',num:false,cls:'zero'};
   // Classification verdicts render as dim words — an answer, not a match.
-  if(['no_session','pending','isp','educational','shared_network'].includes(v)) return {text:v,num:false,cls:'zero'};
+  if(['no_session','pending','isp','educational','shared_network','already_known','skipped_bot','enriched_other_visit'].includes(v)) return {text:v,num:false,cls:'zero'};
   const m=String(v).match(/linkedin\.com\/in\/([^\/?#]+)/i);
   return {text:m?m[1]:String(v),num:false};
 }
@@ -121,7 +149,15 @@ function render(d, visits, range, tz){
   const dl=el('a',{text:'⬇ Download CSV (full)',cls:'tag'});
   dl.href=`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}&format=csv`;
   dl.style.textDecoration='none';
-  root.appendChild(dl);
+  const fbar=el('div',{cls:'bar'});
+  fbar.appendChild(filterSelect('ip_class','IP class',visits));
+  fbar.appendChild(filterSelect('snitcher_type','Snit type',visits));
+  fbar.appendChild(filterSelect('leadfeeder_type','LF type',visits));
+  fbar.appendChild(dl);
+  root.appendChild(fbar);
+  const shown=visits.filter(matrixFilterPass);
+  if(shown.length!==visits.length) root.appendChild(el('div',{cls:'note',text:`Filters match ${shown.length} of ${visits.length} visits.`}));
+  visits=shown;
   if(visits.length){
     root.appendChild(makeTable(
       [{text:'Time',num:false},{text:'IP',num:false},{text:'IP class',num:false},{text:'Snit type',num:false},{text:'LF type',num:false},
