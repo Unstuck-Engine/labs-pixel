@@ -115,12 +115,40 @@ function filterSelect(field, label, rows){
   wrap.appendChild(sel);
   return wrap;
 }
+// Answers that are NOT matches (verdict words) — shared by the snitcher-column
+// filter and the per-day summary. Mirrors the EF's NON_MATCH_CELLS.
+const NON_MATCH=new Set(['no_match','no_session','pending','isp','educational','shared_network','already_known','skipped_bot','enriched_other_visit']);
+const isMatchCell=(v)=>v!=null&&v!==''&&!NON_MATCH.has(String(v));
+
+// Snitcher COLUMN filter: domains bucket into '(matched)'; verdicts stay
+// individually selectable; '(blank)' = never asked.
+function snitcherSelect(rows){
+  const wrap=el('label',{text:'Snitcher '});
+  const sel=document.createElement('select');
+  const verdicts=[...new Set(rows.map(r=>r.snitcher||'').filter(v=>v&&!isMatchCell(v)))].sort();
+  [['','all'],['__matched','(matched)'],...verdicts.map(v=>[v,v]),['__blank','(blank)']].forEach(([val,txt])=>{
+    const o=document.createElement('option'); o.value=val; o.textContent=txt;
+    if(val===matrixFilters.snitcher) o.selected=true;
+    sel.appendChild(o);
+  });
+  sel.onchange=()=>{ matrixFilters.snitcher=sel.value; if(lastData) render(lastData,lastVisits,lastRange,lastTz); };
+  wrap.appendChild(sel);
+  return wrap;
+}
+
 function matrixFilterPass(r){
   for(const f of ['ip_class','snitcher_type','leadfeeder_type']){
     const want=matrixFilters[f];
     if(!want) continue;
     const have=r[f]||'';
     if(want==='__blank' ? have!=='' : have!==want) return false;
+  }
+  const ws=matrixFilters.snitcher;
+  if(ws){
+    const have=r.snitcher||'';
+    if(ws==='__blank'){ if(have!=='') return false; }
+    else if(ws==='__matched'){ if(!isMatchCell(have)) return false; }
+    else if(have!==ws) return false;
   }
   return true;
 }
@@ -153,6 +181,7 @@ function render(d, visits, range, tz){
   fbar.appendChild(filterSelect('ip_class','IP class',visits));
   fbar.appendChild(filterSelect('snitcher_type','Snit type',visits));
   fbar.appendChild(filterSelect('leadfeeder_type','LF type',visits));
+  fbar.appendChild(snitcherSelect(visits));
   fbar.appendChild(dl);
   root.appendChild(fbar);
   const shown=visits.filter(matrixFilterPass);
@@ -174,6 +203,34 @@ function render(d, visits, range, tz){
       ])));
     if(visits.length>100) root.appendChild(el('div',{cls:'note',text:`Showing 100 of ${visits.length} visits — CSV has all rows.`}));
   } else root.appendChild(el('div',{cls:'note',text:'No human visits in this window.'}));
+
+  // 0b. PER-DAY SUMMARY over the (filtered) matrix rows: visits + match
+  // counts per provider per day. Verdict words and no_match are answers,
+  // not matches (same rule as the EF's ?report=daily).
+  root.appendChild(section('Per-day summary — visits and matches','Computed from the matrix rows above, so the filters apply here too. A match = a real domain/person in the cell (verdict words and × do not count).'));
+  {
+    const dayOf=(iso)=>new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(iso));
+    const ALLCOLS=[...VCOLS,...PCOLS];
+    const byDay=new Map();
+    visits.forEach(v=>{
+      const day=dayOf(v.timecode);
+      const agg=byDay.get(day)||Object.fromEntries([['visits',0],...ALLCOLS.map(c=>[c,0])]);
+      agg.visits++;
+      ALLCOLS.forEach(c=>{ if(isMatchCell(v[c])) agg[c]++; });
+      byDay.set(day,agg);
+    });
+    const days2=[...byDay.keys()].sort().reverse();
+    if(days2.length){
+      const tot=Object.fromEntries([['visits',0],...ALLCOLS.map(c=>[c,0])]);
+      const rows2=days2.map(day=>{
+        const a=byDay.get(day);
+        tot.visits+=a.visits; ALLCOLS.forEach(c=>tot[c]+=a[c]);
+        return [{text:day,num:false},{text:a.visits,big:true},...ALLCOLS.map(c=>({text:a[c]}))];
+      });
+      rows2.push([{text:'TOTAL',num:false,cls:'lead'},{text:tot.visits,cls:'lead'},...ALLCOLS.map(c=>({text:tot[c],cls:'lead'}))]);
+      root.appendChild(makeTable([{text:'Day',num:false},{text:'Visits'},...ALLCOLS.map(c=>({text:c}))],rows2));
+    } else root.appendChild(el('div',{cls:'note',text:'No visits match the current filters.'}));
+  }
 
   // 1. DAILY ACTIVITY (days × providers, identifications)
   const daily=d.daily||[]; const cell={}; daily.forEach(r=>cell[r.day+'|'+r.provider]=r.n);
