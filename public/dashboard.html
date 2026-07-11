@@ -102,6 +102,8 @@ async function load(){
 function cellVal(v){
   if(v==null) return {text:'',num:false};
   if(v==='no_match') return {text:'×',num:false,cls:'zero'};
+  // Classification verdicts render as dim words — an answer, not a match.
+  if(['no_session','pending','isp','educational','shared_network'].includes(v)) return {text:v,num:false,cls:'zero'};
   const m=String(v).match(/linkedin\.com\/in\/([^\/?#]+)/i);
   return {text:m?m[1]:String(v),num:false};
 }
@@ -115,7 +117,7 @@ function render(d, visits, range, tz){
   const VCOLS=['snitcher','albacross','leadfeeder','rb2b','vector','knock2','leadpipe'];
   const PCOLS=['rb2b_p','vector_p','knock2_p','leadpipe_p'];
   root.appendChild(section('Per-visit matrix — every provider answer per human visit',
-    '"Human" = our user-agent classifier (bots faking real browsers pass it — check IP class). IP class = free rDNS/ASN verdict; snit/lf type = Snitcher business|isp / Leadfeeder company|shared_network for that IP. Company columns show the matched domain; person columns the matched person. × = provider answered with no match; blank = provider never answered. Time on site = seconds between first and last pageview of the visit.'));
+    '"Human" = our user-agent classifier (bots faking real browsers pass it — check IP class). IP class = free rDNS/ASN verdict; snit/lf type = Snitcher business|isp / Leadfeeder company|shared_network for that IP. The snitcher column carries the full verdict: domain = identified business; isp/educational = classified non-business; pending = session received, not yet enriched; no_session = Radar never saw this visitor (strong bot tell). × = answered with no match; blank = never asked. Time on site = seconds between first and last pageview.'));
   const dl=el('a',{text:'⬇ Download CSV (full)',cls:'tag'});
   dl.href=`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}&format=csv`;
   dl.style.textDecoration='none';
