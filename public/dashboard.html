@@ -24,6 +24,13 @@
   select,button{background:#161b24;color:#e6e6e6;border:1px solid #2a3342;border-radius:6px;padding:5px 9px;font:inherit;cursor:pointer}
   label{color:#8a93a6;font-size:12px}
   #err{color:#ff8080;margin:6px 0}
+  details.msel{position:relative;display:inline-block}
+  details.msel>summary{list-style:none;cursor:pointer;background:#161b24;border:1px solid #2a3342;border-radius:6px;padding:5px 9px;color:#e6e6e6;font-size:13px;user-select:none}
+  details.msel>summary::-webkit-details-marker{display:none}
+  details.msel[open]>summary{border-color:#7fb2ff}
+  details.msel>.panel{position:absolute;z-index:10;top:110%;left:0;background:#11151d;border:1px solid #2a3342;border-radius:8px;padding:8px 10px;min-width:170px;max-height:260px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+  details.msel label.opt{display:flex;gap:7px;align-items:center;font-size:12px;color:#c9d2e0;padding:3px 0;cursor:pointer;white-space:nowrap}
+  details.msel .clear{font-size:11px;color:#7fb2ff;cursor:pointer;padding:2px 0 4px;display:block}
   #meta{color:#8a93a6;font-size:11px}
   .person{color:#8fd0ff}.company{color:#c9a227}
 </style>
@@ -84,7 +91,8 @@ function section(title, sub){
 }
 
 let lastData=null, lastVisits=[], lastRange='7', lastTz='UTC';
-const matrixFilters={ip_class:'', snitcher_type:'', leadfeeder_type:''};
+const matrixFilters={ip_class:new Set(), snitcher_type:new Set(), leadfeeder_type:new Set(), snitcher:new Set()};
+let openFilter=null; // which dropdown stays open across re-renders
 
 async function load(){
   const err=document.getElementById('err'); err.textContent='';
@@ -100,55 +108,59 @@ async function load(){
   }catch(e){ err.textContent='Failed to load: '+e.message; }
 }
 
-// Matrix filter row: one select per classification dimension, options from
-// the loaded rows' distinct values ('(blank)' matches empty cells).
-function filterSelect(field, label, rows){
-  const wrap=el('label',{text:label+' '});
-  const sel=document.createElement('select');
-  const vals=[...new Set(rows.map(r=>r[field]||''))].sort();
-  [['','all'],...vals.map(v=>[v||'__blank', v||'(blank)'])].forEach(([val,txt])=>{
-    const o=document.createElement('option'); o.value=val; o.textContent=txt;
-    if(val===matrixFilters[field]) o.selected=true;
-    sel.appendChild(o);
-  });
-  sel.onchange=()=>{ matrixFilters[field]=sel.value; if(lastData) render(lastData,lastVisits,lastRange,lastTz); };
-  wrap.appendChild(sel);
-  return wrap;
-}
+// Matrix filter row: one CHECKBOX DROPDOWN per dimension — pick any number
+// of values (OR within a filter, AND across filters). '(blank)' matches
+// empty cells. Options come from the loaded rows' distinct values.
 // Answers that are NOT matches (verdict words) — shared by the snitcher-column
 // filter and the per-day summary. Mirrors the EF's NON_MATCH_CELLS.
 const NON_MATCH=new Set(['no_match','no_session','pending','isp','educational','shared_network','already_known','skipped_bot','enriched_other_visit']);
 const isMatchCell=(v)=>v!=null&&v!==''&&!NON_MATCH.has(String(v));
 
-// Snitcher COLUMN filter: domains bucket into '(matched)'; verdicts stay
-// individually selectable; '(blank)' = never asked.
-function snitcherSelect(rows){
-  const wrap=el('label',{text:'Snitcher '});
-  const sel=document.createElement('select');
-  const verdicts=[...new Set(rows.map(r=>r.snitcher||'').filter(v=>v&&!isMatchCell(v)))].sort();
-  [['','all'],['__matched','(matched)'],...verdicts.map(v=>[v,v]),['__blank','(blank)']].forEach(([val,txt])=>{
-    const o=document.createElement('option'); o.value=val; o.textContent=txt;
-    if(val===matrixFilters.snitcher) o.selected=true;
-    sel.appendChild(o);
+function multiSelect(field, label, options){
+  const set=matrixFilters[field];
+  const det=document.createElement('details'); det.className='msel';
+  if(openFilter===field) det.open=true;
+  det.addEventListener('toggle',()=>{ openFilter=det.open?field:(openFilter===field?null:openFilter); });
+  const sum=document.createElement('summary');
+  sum.textContent=set.size?`${label} (${set.size})`:label;
+  det.appendChild(sum);
+  const panel=el('div',{cls:'panel'});
+  const clear=el('span',{text:'clear',cls:'clear'});
+  clear.onclick=()=>{ set.clear(); rerender(); };
+  panel.appendChild(clear);
+  options.forEach(([val,txt])=>{
+    const lab=el('label',{cls:'opt'});
+    const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=set.has(val);
+    cb.onchange=()=>{ cb.checked?set.add(val):set.delete(val); rerender(); };
+    lab.appendChild(cb); lab.appendChild(document.createTextNode(txt));
+    panel.appendChild(lab);
   });
-  sel.onchange=()=>{ matrixFilters.snitcher=sel.value; if(lastData) render(lastData,lastVisits,lastRange,lastTz); };
-  wrap.appendChild(sel);
-  return wrap;
+  det.appendChild(panel);
+  return det;
+}
+function rerender(){ if(lastData) render(lastData,lastVisits,lastRange,lastTz); }
+
+function classOptions(field, rows){
+  return [...new Set(rows.map(r=>r[field]||''))].sort().map(v=>[v||'__blank', v||'(blank)']);
+}
+function snitcherOptions(rows){
+  const verdicts=[...new Set(rows.map(r=>r.snitcher||'').filter(v=>v&&!isMatchCell(v)))].sort();
+  return [['__matched','(matched)'],...verdicts.map(v=>[v,v]),['__blank','(blank)']];
 }
 
-function matrixFilterPass(r){
-  for(const f of ['ip_class','snitcher_type','leadfeeder_type']){
-    const want=matrixFilters[f];
-    if(!want) continue;
-    const have=r[f]||'';
-    if(want==='__blank' ? have!=='' : have!==want) return false;
-  }
-  const ws=matrixFilters.snitcher;
-  if(ws){
+function bucketOf(field, r){
+  if(field==='snitcher'){
     const have=r.snitcher||'';
-    if(ws==='__blank'){ if(have!=='') return false; }
-    else if(ws==='__matched'){ if(!isMatchCell(have)) return false; }
-    else if(have!==ws) return false;
+    if(have==='') return '__blank';
+    return isMatchCell(have)?'__matched':have;
+  }
+  return (r[field]||'')||'__blank';
+}
+function matrixFilterPass(r){
+  for(const f of ['ip_class','snitcher_type','leadfeeder_type','snitcher']){
+    const set=matrixFilters[f];
+    if(!set.size) continue;
+    if(!set.has(bucketOf(f,r))) return false;
   }
   return true;
 }
@@ -178,10 +190,10 @@ function render(d, visits, range, tz){
   dl.href=`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}&format=csv`;
   dl.style.textDecoration='none';
   const fbar=el('div',{cls:'bar'});
-  fbar.appendChild(filterSelect('ip_class','IP class',visits));
-  fbar.appendChild(filterSelect('snitcher_type','Snit type',visits));
-  fbar.appendChild(filterSelect('leadfeeder_type','LF type',visits));
-  fbar.appendChild(snitcherSelect(visits));
+  fbar.appendChild(multiSelect('ip_class','IP class',classOptions('ip_class',visits)));
+  fbar.appendChild(multiSelect('snitcher_type','Snit type',classOptions('snitcher_type',visits)));
+  fbar.appendChild(multiSelect('leadfeeder_type','LF type',classOptions('leadfeeder_type',visits)));
+  fbar.appendChild(multiSelect('snitcher','Snitcher',snitcherOptions(visits)));
   fbar.appendChild(dl);
   root.appendChild(fbar);
   const shown=visits.filter(matrixFilterPass);
