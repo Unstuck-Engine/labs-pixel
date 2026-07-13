@@ -113,8 +113,11 @@ async function load(){
 // empty cells. Options come from the loaded rows' distinct values.
 // Answers that are NOT matches (verdict words) — shared by the snitcher-column
 // filter and the per-day summary. Mirrors the EF's NON_MATCH_CELLS.
-const NON_MATCH=new Set(['no_match','no_session','pending','isp','educational','shared_network','already_known','skipped_bot','enriched_other_visit']);
-const isMatchCell=(v)=>v!=null&&v!==''&&!NON_MATCH.has(String(v));
+const NON_MATCH=new Set(['no_match','no_session','pending','isp','educational','government','shared_network','already_known','skipped_bot','enriched_other_visit']);
+// A real match looks like a domain/URL (has a dot) or a person name (has a
+// space); verdict words are single dot-less tokens. The heuristic backstops
+// the set when a vendor invents a new verdict (Snitcher's 'government').
+const isMatchCell=(v)=>{ if(v==null) return false; const s=String(v); return s!==''&&!NON_MATCH.has(s)&&/[. ]/.test(s); };
 
 function multiSelect(field, label, options){
   const set=matrixFilters[field];
@@ -168,10 +171,11 @@ function matrixFilterPass(r){
 // Compact cell values for the matrix: bare domain as-is, LinkedIn URLs by
 // their /in/<slug>, 'no_match' as a dim ×, absent as blank.
 function cellVal(v){
-  if(v==null) return {text:'',num:false};
+  if(v==null||v==='') return {text:'',num:false};
   if(v==='no_match') return {text:'×',num:false,cls:'zero'};
-  // Classification verdicts render as dim words — an answer, not a match.
-  if(['no_session','pending','isp','educational','shared_network','already_known','skipped_bot','enriched_other_visit'].includes(v)) return {text:v,num:false,cls:'zero'};
+  // Anything that is an answer but not a match renders as a dim word —
+  // shares isMatchCell's rule so new vendor verdicts dim automatically.
+  if(!isMatchCell(v)) return {text:String(v),num:false,cls:'zero'};
   const m=String(v).match(/linkedin\.com\/in\/([^\/?#]+)/i);
   return {text:m?m[1]:String(v),num:false};
 }
