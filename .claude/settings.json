@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "defaultMode": "plan",
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git push * main)",
+      "Read(**/.env*)",
+      "Read(**/credentials*)",
+      "Read(**/.*ssh/*)",
+      "Read(**/.claude/settings.local.json)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git fetch --all --prune 2>&1 && git pull --rebase --autostash 2>&1 || echo '(no upstream or pull failed — continue)'"
+          },
+          {
+            "type": "command",
+            "command": "echo 'WORKING SYSTEM v2 — this repo: main is PR-only (server ruleset); Vercel auto-deploys main. feat/fix PR titles need a feature scope from product docs/features/registry.md. Contract: product docs/working-system.md'"
+          }
+        ]
+      }
+    ]
+  }
+}

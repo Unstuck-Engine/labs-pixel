@@ -1,0 +1,25 @@
+name: feature-scope-gate
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title scope
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR title: $TITLE"
+          if [[ "$TITLE" =~ ^(feat|fix)(\(([a-z0-9][a-z0-9.-]*)\))?!?: ]]; then
+            SCOPE="${BASH_REMATCH[3]}"
+            if [ -z "$SCOPE" ]; then
+              echo "::error::feat/fix PR titles must carry a feature scope — feat(<slug>): ... — with <slug> from product docs/features/registry.md (working-system v2)."
+              exit 1
+            fi
+            echo "scope: $SCOPE (registry membership check activates when the machinery app token lands)"
+          else
+            echo "Non-feat/fix title — no scope required."
+          fi
