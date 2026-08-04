@@ -1,3 +1,7 @@
+# Working-system v2: feat/fix PR titles must carry a feature scope, and the
+# scope must exist in product docs/features/registry.md. Membership check
+# activates automatically once the MACHINERY_APP_KEY org secret exists;
+# until then only the shape check runs.
 name: feature-scope-gate
 on:
   pull_request:
@@ -9,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate PR title scope
+        id: parse
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
@@ -19,7 +24,41 @@ jobs:
               echo "::error::feat/fix PR titles must carry a feature scope — feat(<slug>): ... — with <slug> from product docs/features/registry.md (working-system v2)."
               exit 1
             fi
-            echo "scope: $SCOPE (registry membership check activates when the machinery app token lands)"
+            echo "scope=$SCOPE" >> "$GITHUB_OUTPUT"
           else
             echo "Non-feat/fix title — no scope required."
+            echo "scope=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Key available?
+        id: key
+        if: steps.parse.outputs.scope != ''
+        env:
+          K: ${{ secrets.MACHINERY_APP_KEY }}
+        run: |
+          if [ -n "$K" ]; then echo "has=yes" >> "$GITHUB_OUTPUT"; else
+            echo "has=no" >> "$GITHUB_OUTPUT"
+            echo "::notice::Registry membership check skipped — MACHINERY_APP_KEY not set yet."
+          fi
+      - name: Mint app token
+        id: token
+        if: steps.parse.outputs.scope != '' && steps.key.outputs.has == 'yes'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.MACHINERY_APP_ID }}
+          private-key: ${{ secrets.MACHINERY_APP_KEY }}
+          owner: Unstuck-Engine
+          repositories: product
+      - name: Scope exists in registry?
+        if: steps.parse.outputs.scope != '' && steps.key.outputs.has == 'yes'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SCOPE: ${{ steps.parse.outputs.scope }}
+        run: |
+          gh api repos/Unstuck-Engine/product/contents/docs/features/registry.md --jq '.content' | base64 -d > /tmp/registry.md
+          if grep -qE "^\| $SCOPE \|" /tmp/registry.md; then
+            echo "scope '$SCOPE' found in registry."
+          else
+            echo "::error::Scope '$SCOPE' is not in product docs/features/registry.md. Register the feature first (new row at 0.1.0 + a spec in product docs/specs) or correct the scope. Known slugs:"
+            grep -E '^\| [a-z0-9]' /tmp/registry.md | cut -d'|' -f2 | tr -d ' ' | tr '\n' ' '
+            exit 1
           fi
