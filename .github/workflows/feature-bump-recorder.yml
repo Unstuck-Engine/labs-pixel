@@ -1,0 +1,129 @@
+# Working-system v2: post-merge feature-version bump recorder.
+# On every merge to main whose squash title is feat(<slug>)/fix(<slug>), append
+# a history line and bump the registry row in the product repo — the machinery
+# that replaces "the merging session records the bump". No-ops cleanly until
+# the MACHINERY_APP_KEY org secret exists. chore/docs/refactor titles no-op.
+# Unknown scope fails the job red — that alarm means: register the feature.
+name: feature-bump-recorder
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: feature-bump-recorder
+  cancel-in-progress: false
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse merge commit title
+        id: parse
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          TITLE="${MSG%%$'\n'*}"
+          echo "title: $TITLE"
+          if [[ "$TITLE" =~ ^(feat|fix)\(([a-z0-9][a-z0-9.-]*)\)!?:\ (.*)$ ]]; then
+            echo "type=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "scope=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+            SUMMARY="${BASH_REMATCH[3]}"
+            PR=""
+            if [[ "$SUMMARY" =~ \(#([0-9]+)\)$ ]]; then
+              PR="${BASH_REMATCH[1]}"
+              SUMMARY="${SUMMARY% (\#$PR)}"
+            fi
+            printf 'summary=%s\n' "${SUMMARY:0:80}" >> "$GITHUB_OUTPUT"
+            echo "pr=$PR" >> "$GITHUB_OUTPUT"
+            echo "hit=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=no (not a feat/fix scope title)" && echo "hit=no" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Key available?
+        id: key
+        if: steps.parse.outputs.hit == 'yes'
+        env:
+          K: ${{ secrets.MACHINERY_APP_KEY }}
+        run: |
+          if [ -n "$K" ]; then echo "has=yes" >> "$GITHUB_OUTPUT"; else
+            echo "has=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::Bump NOT recorded — MACHINERY_APP_KEY not set. The merging session must record it per .claude/rules/feature-versioning.md."
+          fi
+      - name: Mint app token
+        id: token
+        if: steps.parse.outputs.hit == 'yes' && steps.key.outputs.has == 'yes'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.MACHINERY_APP_ID }}
+          private-key: ${{ secrets.MACHINERY_APP_KEY }}
+          owner: Unstuck-Engine
+          repositories: product
+      - name: Record bump in product registry
+        if: steps.parse.outputs.hit == 'yes' && steps.key.outputs.has == 'yes'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          TYPE: ${{ steps.parse.outputs.type }}
+          SCOPE: ${{ steps.parse.outputs.scope }}
+          SUMMARY: ${{ steps.parse.outputs.summary }}
+          PRNUM: ${{ steps.parse.outputs.pr }}
+          SRCREPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            rm -rf /tmp/product
+            git clone --depth 2 "https://x-access-token:${GH_TOKEN}@github.com/Unstuck-Engine/product.git" /tmp/product
+            cd /tmp/product
+            python3 - <<'PY'
+          import datetime, os, re, sys
+
+          scope = os.environ["SCOPE"]
+          typ = os.environ["TYPE"]
+          summary = os.environ["SUMMARY"].replace("|", "/")
+          pr = os.environ.get("PRNUM", "")
+          repo = os.environ["SRCREPO"]
+          src = f"{repo}#{pr}" if pr else repo
+          today = datetime.date.today().isoformat()
+
+          reg_path = "docs/features/registry.md"
+          hist_path = "docs/features/history.md"
+          lines = open(reg_path).read().splitlines(keepends=True)
+          out, old, new = [], None, None
+          for ln in lines:
+              cells = [c.strip() for c in ln.split("|")]
+              if len(cells) > 2 and cells[1] == scope:
+                  m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", cells[2])
+                  if not m:
+                      sys.exit(f"unparseable version for {scope}: {cells[2]}")
+                  ma, mi, pa = map(int, m.groups())
+                  old = f"{ma}.{mi}.{pa}"
+                  new = f"{ma}.{mi + 1}.0" if typ == "feat" else f"{ma}.{mi}.{pa + 1}"
+                  raw = ln.split("|")
+                  raw[2] = f" {new} "
+                  repos_idx = 5
+                  repos = [r.strip() for r in raw[repos_idx].split(",")]
+                  if repo not in repos and repo != "product":
+                      raw[repos_idx] = raw[repos_idx].rstrip() + f", {repo} "
+                  raw[6] = f" {today} "
+                  ln = "|".join(raw)
+              out.append(ln)
+          if old is None:
+              sys.exit(f"scope '{scope}' not found in registry — register the feature (row at 0.1.0 + spec) before merging feat/fix with this scope")
+          open(reg_path, "w").write("".join(out))
+          bump_type = "minor" if typ == "feat" else "patch"
+          with open(hist_path, "a") as h:
+              h.write(f"| {today} | {scope} | {old} → {new} | {bump_type} | {src} | {summary} |\n")
+          print(f"OLDNEW={old}->{new}")
+          open("/tmp/oldnew", "w").write(f"{old}->{new}")
+          PY
+            git config user.name "unstuck-machinery[bot]"
+            git config user.email "machinery@unstuckengine.com"
+            git add docs/features/registry.md docs/features/history.md
+            git commit -m "chore(features): ${SCOPE} $(cat /tmp/oldnew) [skip ci]"
+            if git push origin main; then
+              echo "bump recorded: ${SCOPE} $(cat /tmp/oldnew)"
+              exit 0
+            fi
+            echo "push rejected (concurrent bump) — retrying with fresh head ($attempt/3)"
+          done
+          echo "::error::could not record bump after 3 attempts"
+          exit 1
