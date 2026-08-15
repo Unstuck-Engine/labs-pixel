@@ -46,6 +46,13 @@
  *      demo event ships human_interaction so the backend can discard
  *      email-security-scanner detonations (Defender Safe Links,
  *      Mimecast, Proofpoint all render pages with a real JS engine).
+ *  12. DEMO MODE (data-demo-platform): the same file, pasted into a demo
+ *      platform's own custom-code slot, so it runs ON the hosted demo
+ *      page (app.storylane.io/share/<id>, app.arcade.software/share/<id>,
+ *      ...). That page is off-site, so its events are Demo Viewed's, not
+ *      Website Intent's, and they ship standalone:true for the backend to
+ *      route on. Self-gated to the top-level document — see the block at
+ *      the top of the IIFE.
  *
  * Embeds blueimp-md5 inline (~1.6 kB minified — public domain) so HEM
  * computation doesn't depend on a second network request. SHA-256 uses
@@ -64,6 +71,56 @@
     console.warn('[unstuck] missing data-key attribute on script tag');
     return;
   }
+
+  /* -------------------------------------------------------------- */
+  /*  Demo mode — the hosted-demo pixel                              */
+  /* -------------------------------------------------------------- */
+  //
+  // The snippet a customer pastes into their demo platform:
+  //
+  //   <script async src="https://pixel.unstuckengine.com/v1/p.js"
+  //           data-key="<PIXEL_KEY>" data-demo-platform="storylane"></script>
+  //
+  // 8 of the 14 surveyed demo platforms let a customer inject arbitrary
+  // JS into the page THEY host, which beats the per-provider webhook on
+  // both axes: 66% of demos are ungated (no email for a webhook to
+  // carry), and webhook access is tier-gated (Arcade's is Enterprise-
+  // only). Running our own pixel there gets the full identity waterfall
+  // at person level rather than the platform's account reveal.
+  //
+  // The platform is SELF-DECLARED and never inferred from the origin.
+  // 11 of 14 platforms support custom domains, so demo.customer.com can
+  // front any of them, and Reprise keeps its platform origin and the
+  // custom one live for the SAME demo simultaneously. Origin stays an
+  // auth gate on the backend (pixel_configs.config.demo_origins); it is
+  // not the router.
+  var demoPlatform = null;
+  try {
+    var demoPlatformAttr = script.getAttribute('data-demo-platform');
+    if (demoPlatformAttr) {
+      demoPlatform = String(demoPlatformAttr).trim().toLowerCase().slice(0, 64) || null;
+    }
+  } catch (e) {}
+  var demoMode = !!demoPlatform;
+
+  // The self-gate, and the reason a customer never has to keep two
+  // copies of a demo. Every one of these platforms serves the same page
+  // for the hosted share link and for the <iframe> a customer embeds on
+  // their own site — Supademo uses an identical origin AND path for
+  // both, so nothing in the URL can tell them apart. Being the top-level
+  // document can: only the hosted case is off-site.
+  //
+  // Framed => this page belongs to the customer's own site, their own
+  // pixel already reports the visit, and this copy does nothing at all —
+  // no demo events, no page_view, not even a /v1/config call. That makes
+  // double-counting impossible rather than merely unlikely.
+  var isTopLevel = true;
+  try {
+    isTopLevel = window.self === window.top;
+  } catch (e) {
+    isTopLevel = false; // cross-origin parent — we are framed
+  }
+  if (demoMode && !isTopLevel) return;
 
   var HOST = 'https://pixel.unstuckengine.com';
   var VID_COOKIE = '__unstuck_vid';
@@ -481,7 +538,59 @@
     }
   } catch (e) {}
 
+  // Demo mode ships a deliberately narrow event vocabulary. The page
+  // belongs to the demo platform, so page_view / heartbeat / exit /
+  // download / outbound_click would all land in clickstream_events
+  // against app.storylane.io and score as if the customer owned that
+  // page. Only the demo events and `identify` — which the identity
+  // waterfall runs on — leave a hosted demo page.
+  var DEMO_MODE_EVENTS = {
+    demo_view: 1,
+    demo_progress: 1,
+    demo_complete: 1,
+    demo_lead_captured: 1,
+    identify: 1
+  };
+
+  // Hosted-demo id, read from the URL. `Referer` will never carry it:
+  // none of these hosts sets Referrer-Policy, so the browser default
+  // strict-origin-when-cross-origin sends the origin and drops the path.
+  // The script therefore reads location itself and ships the raw path
+  // too, so the backend can re-derive if a pattern below is wrong.
+  //
+  //   storylane  app.storylane.io/share/<id>
+  //   arcade     app.arcade.software/share/<id>
+  //   supademo   app.supademo.com/demo/<id>
+  //   consensus  play.goconsensus.com/<id>
+  //   reprise    app.getreprise.com/launch/<id>/
+  //   demoboost  app.demoboost.com/playback/<8char>
+  //   vidyard    share.vidyard.com/watch/<id>, <sub>.hubs.vidyard.com/...
+  //   walnut     app.teamwalnut.com/demo/?demoId=<uuid>  <- query, not path
+  //
+  // Every one of these except Walnut is "last meaningful path segment",
+  // which parseDemoId() already computes for the embed path.
+  function demoPagePath() {
+    try {
+      return (location.pathname || '/') + (location.search || '');
+    } catch (e) {
+      return null;
+    }
+  }
+  function demoModeId() {
+    try {
+      if (demoPlatform === 'walnut') {
+        var params = new URLSearchParams(location.search);
+        var walnutId = params.get('demoId') || params.get('demoid');
+        if (walnutId) return String(walnutId).slice(0, 128);
+      }
+      return parseDemoId(location.href);
+    } catch (e) {
+      return null;
+    }
+  }
+
   function rawSend(eventType, extra) {
+    if (demoMode && !DEMO_MODE_EVENTS[eventType]) return;
     var body = {
       pixel_key: dataKey,
       visitor_id: vid,
@@ -502,6 +611,20 @@
       for (var k in extra) {
         if (Object.prototype.hasOwnProperty.call(extra, k)) body[k] = extra[k];
       }
+    }
+    if (demoMode) {
+      // standalone:true is what the backend routes on — with
+      // demo_platform it means "off-site demo page", so the event goes
+      // to demo_events (Demo Viewed) instead of clickstream_events
+      // (Website Intent). The declared platform wins over anything
+      // inferred, and the URL-derived id wins over a platform-supplied
+      // one so every event in a session carries the SAME demo_id; the
+      // backend's synthesised idempotency key depends on that.
+      body.demo_platform = demoPlatform;
+      body.demo_page_path = demoPagePath();
+      body.standalone = true;
+      var urlDemoId = demoModeId();
+      if (urlDemoId) body.demo_id = urlDemoId;
     }
     try {
       fetch(HOST + '/v1/events', {
@@ -705,6 +828,11 @@
         webdriver: isWebdriver,
         screen_w: screenW,
         screen_h: screenH,
+        // Tells pixel-config-loader to gate this request on
+        // config.demo_origins instead of allowed_origins — a hosted demo
+        // page is on the platform's origin, which allowed_origins can
+        // never contain.
+        demo_platform: demoPlatform,
       }),
     });
   }).then(function (r) { return r.json(); }).then(function (cfg) {
@@ -987,6 +1115,8 @@
   var wistiaHooked = false;
   var vidyardHooked = false;
   var navatticHooked = false;
+  var hostedEmbed = null;      // demo mode: the page itself, as an embed record
+  var dataLayerHooked = false;
 
   // ---- Human-interaction gate ---------------------------------------
   //
@@ -1185,6 +1315,69 @@
     return true;
   }
 
+  // ---- Hosted-page platform globals ---------------------------------
+  //
+  // Read at emit time, never cached and never assumed present: these are
+  // the platform's own objects, they can load after us, and a custom-
+  // domain build may not expose them at all.
+
+  // Reprise puts replay_id / screen_id / environment on window.reprise.
+  function repriseState() {
+    try {
+      var r = window.reprise;
+      if (!r || typeof r !== 'object') return null;
+      return {
+        replayId: demoStr(r.replay_id),
+        screenId: demoStr(r.screen_id),
+        environment: demoStr(r.environment)
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Arcade is a Next.js app; the flow it is playing sits in the SSR
+  // payload at __NEXT_DATA__.props.pageProps.
+  function arcadeFlow() {
+    try {
+      var nd = window.__NEXT_DATA__;
+      var pp = nd && nd.props && nd.props.pageProps;
+      if (!pp || typeof pp !== 'object') return null;
+      var flow = (pp.flow && typeof pp.flow === 'object') ? pp.flow : pp;
+      var id = demoStr(flow.id) || demoStr(flow.flowId) || demoStr(pp.flowId);
+      var name = demoStr(flow.name) || demoStr(pp.flowName) || demoStr(pp.title);
+      if (!id && !name) return null;
+      return { id: id, name: name };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Returns false when this emission must be dropped entirely.
+  function applyPlatformGlobals(extra) {
+    if (demoPlatform === 'reprise') {
+      var rs = repriseState();
+      if (rs) {
+        // environment is "editor" | "preview" | "publish". Editor and
+        // preview are the customer's own team building the demo —
+        // scoring those would put a rep's dry run into their own
+        // pipeline. An ABSENT global is not a verdict: it may simply not
+        // have loaded yet, so we emit, same posture as every other
+        // optional field here.
+        if (rs.environment && rs.environment !== 'publish') return false;
+        if (rs.replayId) extra.reprise_replay_id = rs.replayId;
+        if (rs.screenId) extra.reprise_screen_id = rs.screenId;
+      }
+    } else if (demoPlatform === 'arcade') {
+      var af = arcadeFlow();
+      if (af) {
+        if (af.id) extra.arcade_flow_id = af.id;
+        if (af.name) extra.arcade_flow_name = af.name;
+      }
+    }
+    return true;
+  }
+
   function emitDemo(eventType, embed, fields) {
     try {
       var extra = {
@@ -1205,6 +1398,7 @@
           if (Object.prototype.hasOwnProperty.call(fields, k)) extra[k] = fields[k];
         }
       }
+      if (demoMode && !applyPlatformGlobals(extra)) return;
       // Buffer until /v1/config lands: demo.enabled and excluded_urls both
       // live in the policy and must be honoured, exactly like page_view.
       if (!demoPolicySettled) {
@@ -1256,7 +1450,12 @@
     // Skipped when the embed was discovered *by* a cross-frame event:
     // that is engagement, and the handler is about to report it properly.
     // Labelling it shallow would be a lie.
-    if (detection !== 'postmessage') {
+    //
+    // Also skipped in demo mode: registerHostedDemo() has already
+    // reported this visit once, with better provenance. Storylane's
+    // share page frames its own /demo/<id> player, so without this the
+    // same visit would report twice.
+    if (detection !== 'postmessage' && !demoMode) {
       emitDemo('demo_view', embed, { detection: 'iframe_only' });
     }
 
@@ -1276,6 +1475,30 @@
     var key = entry.host + '|' + entry.provider;
     if (demoDetected[key]) return demoDetected[key];
     return registerEmbed(entry, null, 'postmessage');
+  }
+
+  // Demo mode: the page ITSELF is the demo, so register it as an embed
+  // record and report the visit once. This is not a convenience — most
+  // hosted players (Reprise, Walnut, Demoboost, Consensus, Arcade)
+  // render in the top document with no iframe at all, so the DOM scan
+  // finds nothing and without this no event would ever leave the page.
+  function registerHostedDemo() {
+    if (!demoMode) return null;
+    if (hostedEmbed) return hostedEmbed;
+    var host = null;
+    var href = null;
+    try { host = location.host.toLowerCase(); } catch (e) {}
+    try { href = demoStr(location.href); } catch (e) {}
+    hostedEmbed = {
+      provider: demoPlatform,
+      host: host,
+      src: href,
+      demoId: demoModeId(),
+      detection: 'hosted_page',
+      hasEvents: false
+    };
+    emitDemo('demo_view', hostedEmbed, { detection: 'hosted_page' });
+    return hostedEmbed;
   }
 
   function scanDemoEmbeds() {
@@ -1799,14 +2022,72 @@
     } catch (e) {}
   }
 
+  /* -- GTM dataLayer (Consensus) -------------------------------------- */
+  /* Consensus allows no raw <script> — only a GTM container — and pushes
+     a `Lead Submitted` event carrying the viewer's email into dataLayer.
+     That is the one place a gated Consensus demo hands us a person, so we
+     drain what is already queued and wrap push for what follows. GTM
+     loads async, so we poll for the array for ~10s exactly like
+     hookNavattic. The email goes through publicIdentify — the single
+     identity path — never a second one.                                  */
+  function readDataLayerEntry(entry) {
+    try {
+      if (!entry || typeof entry !== 'object') return;
+      var name = demoStr(entry.event);
+      if (!name || name.toLowerCase().indexOf('lead') === -1) return;
+      var email = demoEmail(entry.email) || demoEmail(entry.user_email);
+      if (!email) return;
+      publicIdentify(email, { source: 'demo_' + demoPlatform });
+      emitDemo('demo_lead_captured', hostedEmbed || registerHostedDemo(), {
+        demo_event_name: name
+      });
+    } catch (e) {}
+  }
+
+  function hookDataLayer() {
+    if (!demoMode || dataLayerHooked) return;
+    var waited = 0;
+    var timer = setInterval(function () {
+      try {
+        var dl = window.dataLayer;
+        if (!dl || typeof dl.push !== 'function' || typeof dl.length !== 'number') {
+          waited += 500;
+          if (waited >= 10000) clearInterval(timer);
+          return;
+        }
+        clearInterval(timer);
+        if (dataLayerHooked) return;
+        dataLayerHooked = true;
+        for (var i = 0; i < dl.length; i++) readDataLayerEntry(dl[i]);
+        var originalPush = dl.push;
+        dl.push = function () {
+          var result = originalPush.apply(this, arguments);
+          try {
+            for (var j = 0; j < arguments.length; j++) readDataLayerEntry(arguments[j]);
+          } catch (e) {}
+          return result;
+        };
+      } catch (e) {
+        clearInterval(timer);
+      }
+    }, 500);
+  }
+
   /* -- Init ----------------------------------------------------------- */
 
   function initDemoDetection() {
     if (demoInitDone) return;
     demoInitDone = true;
     try {
+      // Demo mode reports the hosted page first, so the visit is on record
+      // before any platform event API has had a chance to load.
+      registerHostedDemo();
+      // The cross-frame listeners stay live in demo mode: Storylane's share
+      // page frames its own /demo/<id> player, so step depth and completion
+      // still arrive over postMessage.
       scanDemoEmbeds();
       startDemoObserver();
+      hookDataLayer();
     } catch (e) {}
   }
 
