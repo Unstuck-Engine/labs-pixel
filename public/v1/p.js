@@ -899,6 +899,12 @@
   // matching applies to iframe-src detection ONLY; postMessage origin
   // validation always requires an exact host match, so widening
   // detection never widens the trust boundary.
+  //
+  // Every host below was checked against the vendor's embed docs or a
+  // live production embed, EXCEPT embed.guidde.com and
+  // play.instruqt.com, which are unconfirmed. Both are vendor-controlled
+  // subdomains, so the trust boundary holds either way; the risk is only
+  // that detection silently misses those two platforms.
   var DEMO_HOSTS = [
     /* Interactive demo platforms — event APIs implemented below. */
     { provider: 'storylane', host: 'app.storylane.io', events: true },
@@ -906,21 +912,27 @@
     { provider: 'navattic', host: 'capture.navattic.com', events: true },
     { provider: 'navattic', host: 'js.navattic.com', events: true },
     { provider: 'supademo', host: 'app.supademo.com', events: true },
-    { provider: 'navless', host: 'app.tourial.com', events: true },
-    { provider: 'navless', host: 'app.navless.com', events: true },
+    // Tourial rebranded to Navless.ai. The *embed* host is still
+    // websitetours.tourial.com — app.tourial.com now redirects to
+    // app.navless.ai, and navless.com is an unrelated business, so
+    // neither belongs here.
+    { provider: 'navless', host: 'websitetours.tourial.com', events: true },
     { provider: 'guidde', host: 'embed.guidde.com', events: true },
     { provider: 'instruqt', host: 'play.instruqt.com', events: true },
 
     /* Interactive demo platforms with no parent-page event API.
        Walnut states outright that tracking pixels are not supported in
        embedded demos; Consensus keeps its dataLayer inside the player
-       frame. Both are served by the /v1/demo webhook path instead. */
+       frame. Both are served by the /v1/demo webhook path instead.
+       Four of these use a different apex from their brand domain —
+       teamwalnut.com, getreprise.com, demostack.app — so anything keyed
+       on the brand name misses them. */
     { provider: 'arcade', host: 'demo.arcade.software', events: false },
-    { provider: 'consensus', host: 'app.goconsensus.com', events: false },
+    { provider: 'consensus', host: 'play.goconsensus.com', events: false },
     { provider: 'guideflow', host: 'app.guideflow.com', events: false },
-    { provider: 'walnut', host: 'walnut.io', suffix: true, events: false },
-    { provider: 'reprise', host: 'reprise.com', suffix: true, events: false },
-    { provider: 'demostack', host: 'demostack.com', suffix: true, events: false },
+    { provider: 'walnut', host: 'app.teamwalnut.com', events: false },
+    { provider: 'reprise', host: 'app.getreprise.com', events: false },
+    { provider: 'demostack', host: 'demostack.app', suffix: true, events: false },
 
     /* Demo video hosts. */
     { provider: 'wistia', host: 'fast.wistia.net', events: true },
@@ -1307,16 +1319,27 @@
     } catch (e) {}
   }
 
-  // Wistia inline embeds are divs, not iframes — _wq / Wistia globals are
-  // the only tell.
+  // Wistia's modern embed is a <wistia-player media-id> custom element,
+  // and the legacy inline embed is a .wistia_embed div — an iframe[src]
+  // scan sees neither. The _wq / Wistia globals are the third tell.
   function detectWistiaWithoutIframe() {
     try {
-      if (!window._wq && !window.Wistia) return;
       var entry = entryForHost('fast.wistia.net');
       if (!entry) return;
       var key = entry.host + '|' + entry.provider;
       if (demoDetected[key]) return;
-      registerEmbed(entry, null, 'global');
+      var el = null;
+      try {
+        el = document.querySelector('wistia-player[media-id],.wistia_embed,[class*="wistia_async_"]');
+      } catch (e) {}
+      if (el) {
+        var mediaId = null;
+        try { mediaId = demoStr(el.getAttribute('media-id')); } catch (e2) {}
+        var embed = registerEmbed(entry, null, 'element');
+        if (embed && mediaId && !embed.demoId) embed.demoId = mediaId;
+        return;
+      }
+      if (window._wq || window.Wistia) registerEmbed(entry, null, 'global');
     } catch (e) {}
   }
 
@@ -1430,7 +1453,7 @@
      `percentage` field.                                                 */
   function handleSupademo(embed, data) {
     if (!data || data.source !== 'Supademo') return;
-    var name = demoStr(data.event) || demoStr(data.type);
+    var name = demoStr(data.type) || demoStr(data.event);
     if (!name) return;
     var pct = demoNum(data.percentage);
 
@@ -1463,13 +1486,12 @@
      zero field values — there is no email to read, so we don't look.     */
   function handleNavless(embed, data) {
     if (!data || data.type !== 'TOURIAL_EVENT') return;
-    var name = demoStr(data.event) || demoStr(data.name) ||
-      demoStr(data.payload && data.payload.event);
+    var payload = (data.payload && typeof data.payload === 'object') ? data.payload : null;
+    var name = payload ? demoStr(payload.eventType) : null;
     if (!name) return;
 
     if (NAVLESS_PROGRESS[name]) {
-      var formId = demoStr(data.formId) ||
-        demoStr(data.payload && data.payload.formId);
+      var formId = demoStr(payload.formId);
       var fields = {
         demo_event_name: name,
         step_depth: noteStep(embed.provider, name + ':' + (formId || ''))
