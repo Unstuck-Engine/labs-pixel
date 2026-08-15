@@ -1232,7 +1232,7 @@
 
   // ---- Detection ----------------------------------------------------
 
-  function registerEmbed(entry, src, detection) {
+  function registerEmbed(entry, src, detection, demoId) {
     if (!entry) return null;
     var key = entry.host + '|' + entry.provider;
     if (demoDetected[key]) return demoDetected[key];
@@ -1240,7 +1240,7 @@
       provider: entry.provider,
       host: entry.host,
       src: src ? demoStr(src) : null,
-      demoId: src ? parseDemoId(src) : null,
+      demoId: demoId || (src ? parseDemoId(src) : null),
       detection: detection,
       hasEvents: !!entry.events
     };
@@ -1335,8 +1335,7 @@
       if (el) {
         var mediaId = null;
         try { mediaId = demoStr(el.getAttribute('media-id')); } catch (e2) {}
-        var embed = registerEmbed(entry, null, 'element');
-        if (embed && mediaId && !embed.demoId) embed.demoId = mediaId;
+        registerEmbed(entry, null, 'element', mediaId);
         return;
       }
       if (window._wq || window.Wistia) registerEmbed(entry, null, 'global');
