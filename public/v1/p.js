@@ -36,6 +36,16 @@
  *      page(properties), giveCookieConsent().
  *  10. Auto-track: form submits (extract email field), downloads
  *      (.pdf/.doc/.xls/.zip), outbound clicks, popstate (SPA page-views).
+ *  11. Demo engagement detection: recognise interactive-demo and
+ *      demo-video embeds on the page (Storylane, Navattic, Supademo,
+ *      Arcade, Wistia, ...), subscribe to the cross-frame events those
+ *      platforms broadcast out of their iframes, and report
+ *      demo_view / demo_progress / demo_complete / demo_lead_captured
+ *      separately from page_view. The pixel never enters the demo
+ *      iframe — that is blocked cross-origin on every platform. Every
+ *      demo event ships human_interaction so the backend can discard
+ *      email-security-scanner detonations (Defender Safe Links,
+ *      Mimecast, Proofpoint all render pages with a real JS engine).
  *
  * Embeds blueimp-md5 inline (~1.6 kB minified — public domain) so HEM
  * computation doesn't depend on a second network request. SHA-256 uses
@@ -700,6 +710,11 @@
   }).then(function (r) { return r.json(); }).then(function (cfg) {
     policy = cfg || {};
 
+    // Demo detection gates on the policy (demo.enabled, demo.hosts,
+    // excluded_urls), so release its buffered events and re-scan now that
+    // any backend-supplied extra hosts are known.
+    demoPolicyReady();
+
     // Excluded URL → suppress everything for this page.
     if (isExcluded(location.href, policy.excluded_urls)) return;
 
@@ -709,6 +724,7 @@
 
     sendEvent('page_view');
   }).catch(function () {
+    demoPolicyReady();
     sendEvent('page_view');
   });
 
@@ -853,4 +869,934 @@
       }
     } catch (e) {}
   }, true);
+
+  /* ================================================================== */
+  /*  Demo engagement detection                                          */
+  /*                                                                     */
+  /*  The pixel NEVER enters the demo iframe — cross-origin access is    */
+  /*  blocked on every platform. It stays on the parent page, works out  */
+  /*  which demo platform is embedded, and subscribes to the events      */
+  /*  those platforms deliberately broadcast out of their iframes.       */
+  /*                                                                     */
+  /*  Threat model: this adds a `message` listener to third-party pages. */
+  /*  Every inbound message is origin-checked against the registry       */
+  /*  below (exact host match) before a single field is read. We never   */
+  /*  eval, never write message data into the DOM, and only read the     */
+  /*  small set of fields each platform documents. An email arriving     */
+  /*  over postMessage is handed to publicIdentify(), which already      */
+  /*  lowercases / validates / dedups / hashes — there is no second      */
+  /*  identity path.                                                     */
+  /* ================================================================== */
+
+  // ---- Host registry ------------------------------------------------
+  //
+  // `events: true` marks providers whose cross-frame event API we
+  // subscribe to below. Everything else is detected by embed host alone
+  // and produces only the shallow detection-time demo_view.
+  //
+  // `suffix: true` means "this host or any subdomain of it" — used for
+  // platforms that serve each customer from their own subdomain. Suffix
+  // matching applies to iframe-src detection ONLY; postMessage origin
+  // validation always requires an exact host match, so widening
+  // detection never widens the trust boundary.
+  var DEMO_HOSTS = [
+    /* Interactive demo platforms — event APIs implemented below. */
+    { provider: 'storylane', host: 'app.storylane.io', events: true },
+    { provider: 'storylane', host: 'js.storylane.io', events: true },
+    { provider: 'navattic', host: 'capture.navattic.com', events: true },
+    { provider: 'navattic', host: 'js.navattic.com', events: true },
+    { provider: 'supademo', host: 'app.supademo.com', events: true },
+    { provider: 'navless', host: 'app.tourial.com', events: true },
+    { provider: 'navless', host: 'app.navless.com', events: true },
+    { provider: 'guidde', host: 'embed.guidde.com', events: true },
+    { provider: 'instruqt', host: 'play.instruqt.com', events: true },
+
+    /* Interactive demo platforms with no parent-page event API.
+       Walnut states outright that tracking pixels are not supported in
+       embedded demos; Consensus keeps its dataLayer inside the player
+       frame. Both are served by the /v1/demo webhook path instead. */
+    { provider: 'arcade', host: 'demo.arcade.software', events: false },
+    { provider: 'consensus', host: 'app.goconsensus.com', events: false },
+    { provider: 'guideflow', host: 'app.guideflow.com', events: false },
+    { provider: 'walnut', host: 'walnut.io', suffix: true, events: false },
+    { provider: 'reprise', host: 'reprise.com', suffix: true, events: false },
+    { provider: 'demostack', host: 'demostack.com', suffix: true, events: false },
+
+    /* Demo video hosts. */
+    { provider: 'wistia', host: 'fast.wistia.net', events: true },
+    { provider: 'wistia', host: 'fast.wistia.com', events: true },
+    { provider: 'vidyard', host: 'play.vidyard.com', events: true },
+    { provider: 'tella', host: 'www.tella.tv', events: true },
+    { provider: 'tella', host: 'tella.tv', events: true },
+    { provider: 'loom', host: 'www.loom.com', path: '/embed', events: false }
+  ];
+
+  // Cross-frame event names, verbatim from each vendor's docs. Kept as
+  // explicit allow-lists so an unexpected string from a demo origin is
+  // ignored rather than forwarded to the backend.
+  var STORYLANE_VIEW = { demo_open: 1, flow_start: 1 };
+  var STORYLANE_PROGRESS = { step_view: 1, checklist_item_view: 1 };
+  var STORYLANE_COMPLETE = { demo_finished: 1, flow_end: 1 };
+
+  var SUPADEMO_VIEW = { 'Supademo:started': 1 };
+  var SUPADEMO_PROGRESS = { 'Supademo:slideChange': 1, 'Supademo:progress': 1 };
+  var SUPADEMO_COMPLETE = { 'Supademo:completed': 1 };
+
+  var NAVATTIC_VIEW = { START_FLOW: 1 };
+  var NAVATTIC_PROGRESS = {
+    VIEW_STEP: 1, ENGAGE: 1, NAVIGATE: 1, COMPLETE_TASK: 1,
+    START_CHECKLIST: 1, OPEN_CHECKLIST: 1, CLOSE_CHECKLIST: 1
+  };
+  var NAVATTIC_COMPLETE = { COMPLETE_FLOW: 1, CONVERTED: 1 };
+
+  var NAVLESS_VIEW = { SESSION_START: 1, TOURIAL_VIEW: 1 };
+  var NAVLESS_PROGRESS = { CLICK: 1, FORM_SUBMIT: 1 };
+
+  var INSTRUQT_VIEW = { 'track.started': 1, 'track.ready': 1 };
+  var INSTRUQT_PROGRESS = {
+    'track.challenge_started': 1,
+    'track.challenge_skipped': 1,
+    'track.challenge_completed': 1
+  };
+  var INSTRUQT_COMPLETE = { 'track.completed': 1 };
+
+  // ---- Module state -------------------------------------------------
+
+  var demoRegistryCache = null;
+  var demoDetected = {};       // host -> embed record (dedup: one per host)
+  var demoStepSeen = {};       // provider -> { stepKey: 1 }
+  var demoStepDepth = {};      // provider -> distinct step count
+  var demoPending = [];        // events buffered until /v1/config resolves
+  var demoPolicySettled = false;
+  var demoObserver = null;
+  var demoScanQueued = false;
+  var demoInitDone = false;
+  var wistiaHooked = false;
+  var vidyardHooked = false;
+  var navatticHooked = false;
+
+  // ---- Human-interaction gate ---------------------------------------
+  //
+  // The anti-scanner control. Microsoft Defender Safe Links, Mimecast and
+  // Proofpoint all detonate URLs in a real rendering browser before the
+  // mail is delivered — they run this script. None of them publishes a
+  // user agent or an egress IP range, so they can only be caught
+  // behaviourally: a headless sandbox produces no pointerdown, no scroll
+  // and no keydown. We never suppress client-side; every demo event
+  // ships the flag and the backend decides.
+  var humanInteraction = false;
+  (function () {
+    function markHuman() { humanInteraction = true; }
+    var names = ['pointerdown', 'scroll', 'keydown'];
+    for (var i = 0; i < names.length; i++) {
+      try {
+        window.addEventListener(names[i], markHuman, {
+          passive: true, once: true, capture: true
+        });
+      } catch (e) {
+        // Older browsers reject the options object; fall back to a plain
+        // capture listener. markHuman is idempotent, so a listener that
+        // never self-removes is harmless.
+        try { window.addEventListener(names[i], markHuman, true); } catch (e2) {}
+      }
+    }
+  })();
+
+  // ---- Prerender gate -----------------------------------------------
+  //
+  // Chrome's Speculation Rules prerendering EXECUTES JavaScript, so a
+  // naive pixel reports demos on pages the user never actually visited.
+  // The Page Visibility API has no prerender state, so visibilityState
+  // does not catch this — document.prerendering is the only signal.
+  // Demo detection is held until activation. page_view behaviour is
+  // deliberately unchanged in this revision.
+  function isPrerendering() {
+    try { return document.prerendering === true; } catch (e) { return false; }
+  }
+  function wasPrerendered() {
+    try {
+      var nav = performance.getEntriesByType('navigation')[0];
+      return !!(nav && nav.activationStart > 0);
+    } catch (e) { return false; }
+  }
+
+  // ---- Small helpers ------------------------------------------------
+
+  function demoStr(value) {
+    return (typeof value === 'string' && value) ? value.slice(0, 512) : null;
+  }
+  function demoNum(value) {
+    var n = typeof value === 'number' ? value : parseFloat(value);
+    return isFinite(n) ? n : null;
+  }
+  function demoEmail(value) {
+    if (typeof value !== 'string') return null;
+    var v = value.trim();
+    if (v.length < 3 || v.length > 320) return null;
+    return v.indexOf('@') > 0 ? v : null;
+  }
+
+  // Host of an origin string ("https://app.storylane.io:443" -> host).
+  // Avoids `new URL` because sandboxed frames send the literal origin
+  // "null", which throws.
+  function hostFromOrigin(origin) {
+    if (typeof origin !== 'string') return null;
+    var i = origin.indexOf('://');
+    if (i === -1) return null;
+    var rest = origin.slice(i + 3);
+    var slash = rest.indexOf('/');
+    if (slash !== -1) rest = rest.slice(0, slash);
+    var colon = rest.lastIndexOf(':');
+    if (colon > 0 && rest.indexOf(']') === -1) rest = rest.slice(0, colon);
+    return rest.toLowerCase() || null;
+  }
+
+  function buildDemoRegistry() {
+    var list = DEMO_HOSTS.slice();
+    // policy.demo.hosts — extra hosts supplied by the backend. Accepts
+    // "app.example.com" or { host, provider, path, suffix }. Extras never
+    // get an event API; they are detection-only.
+    try {
+      var extra = policy && policy.demo && policy.demo.hosts;
+      if (extra && extra.length) {
+        for (var i = 0; i < extra.length; i++) {
+          var e = extra[i];
+          var h = demoStr(typeof e === 'string' ? e : (e && e.host));
+          if (!h) continue;
+          list.push({
+            provider: demoStr(e && e.provider) || 'custom',
+            host: h.toLowerCase(),
+            path: demoStr(e && e.path),
+            suffix: !!(e && e.suffix),
+            events: false
+          });
+        }
+      }
+    } catch (er) {}
+    return list;
+  }
+
+  function demoRegistry() {
+    if (!demoRegistryCache) demoRegistryCache = buildDemoRegistry();
+    return demoRegistryCache;
+  }
+
+  // Exact-host lookup. Used for postMessage origin validation — never
+  // suffix-matched, so a hostile *.walnut.io style origin can't slip in.
+  function entryForHost(host) {
+    if (!host) return null;
+    var reg = demoRegistry();
+    for (var i = 0; i < reg.length; i++) {
+      if (reg[i].host === host) return reg[i];
+    }
+    return null;
+  }
+
+  // Detection-side match: exact host, or subdomain when suffix is set,
+  // plus an optional path prefix (Loom only embeds under /embed).
+  function entryForIframe(url) {
+    var host, path;
+    try {
+      var u = new URL(url, location.href);
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+      host = u.host.toLowerCase();
+      var portAt = host.lastIndexOf(':');
+      if (portAt > 0 && host.indexOf(']') === -1) host = host.slice(0, portAt);
+      path = u.pathname || '/';
+    } catch (e) {
+      return null;
+    }
+    var reg = demoRegistry();
+    for (var i = 0; i < reg.length; i++) {
+      var entry = reg[i];
+      var hit = host === entry.host ||
+        (entry.suffix && host.length > entry.host.length &&
+          host.slice(-(entry.host.length + 1)) === '.' + entry.host);
+      if (!hit) continue;
+      if (entry.path && path.indexOf(entry.path) !== 0) continue;
+      return entry;
+    }
+    return null;
+  }
+
+  // demo_id from the embed URL: last meaningful path segment, with the
+  // generic wrapper segments and file extensions stripped.
+  var DEMO_ID_SKIP = {
+    embed: 1, embeds: 1, demo: 1, demos: 1, iframe: 1, share: 1,
+    player: 1, play: 1, video: 1, videos: 1, medias: 1, watch: 1, v: 1, e: 1
+  };
+  function parseDemoId(url) {
+    try {
+      var parts = new URL(url, location.href).pathname.split('/');
+      for (var i = parts.length - 1; i >= 0; i--) {
+        var seg = parts[i].replace(/\.(html?|js|json)$/i, '');
+        if (!seg) continue;
+        if (Object.prototype.hasOwnProperty.call(DEMO_ID_SKIP, seg.toLowerCase())) continue;
+        return seg.slice(0, 128);
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // ---- Distinct-step accounting -------------------------------------
+
+  function noteStep(provider, stepKey) {
+    if (!demoStepSeen[provider]) {
+      demoStepSeen[provider] = {};
+      demoStepDepth[provider] = 0;
+    }
+    // No usable key from the platform → treat every report as a new step
+    // so step_depth still grows monotonically.
+    var key = (stepKey === null || stepKey === undefined || stepKey === '')
+      ? '#' + (demoStepDepth[provider] + 1)
+      : String(stepKey).slice(0, 128);
+    if (!demoStepSeen[provider][key]) {
+      demoStepSeen[provider][key] = 1;
+      demoStepDepth[provider] += 1;
+    }
+    return demoStepDepth[provider];
+  }
+  function stepDepth(provider) {
+    return demoStepDepth[provider] || null;
+  }
+
+  // ---- Emission -----------------------------------------------------
+
+  function demoAllowed() {
+    try {
+      if (policy) {
+        if (policy.demo && policy.demo.enabled === false) return false;
+        if (isExcluded(location.href, policy.excluded_urls)) return false;
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  function emitDemo(eventType, embed, fields) {
+    try {
+      var extra = {
+        demo_provider: (embed && embed.provider) || null,
+        demo_host: (embed && embed.host) || null,
+        demo_id: (embed && embed.demoId) || null,
+        demo_url: (embed && embed.src) || null,
+        demo_event_name: null,
+        step_index: null,
+        step_depth: null,
+        completion_pct: null,
+        human_interaction: humanInteraction,
+        detection: (embed && embed.detection) || null,
+        prerendered: wasPrerendered()
+      };
+      if (fields) {
+        for (var k in fields) {
+          if (Object.prototype.hasOwnProperty.call(fields, k)) extra[k] = fields[k];
+        }
+      }
+      // Buffer until /v1/config lands: demo.enabled and excluded_urls both
+      // live in the policy and must be honoured, exactly like page_view.
+      if (!demoPolicySettled) {
+        demoPending.push([eventType, extra]);
+        return;
+      }
+      if (!demoAllowed()) return;
+      sendEvent(eventType, extra);
+    } catch (e) {}
+  }
+
+  // Called once /v1/config resolves (or fails). Releases buffered demo
+  // events and re-scans, since policy.demo.hosts may add hosts.
+  function demoPolicyReady() {
+    try {
+      demoRegistryCache = null;
+      demoPolicySettled = true;
+      while (demoPending.length) {
+        var entry = demoPending.shift();
+        if (demoAllowed()) sendEvent(entry[0], entry[1]);
+      }
+      if (demoInitDone) scanDemoEmbeds();
+    } catch (e) {}
+  }
+
+  // ---- Detection ----------------------------------------------------
+
+  function registerEmbed(entry, src, detection) {
+    if (!entry) return null;
+    var key = entry.host + '|' + entry.provider;
+    if (demoDetected[key]) return demoDetected[key];
+    var embed = {
+      provider: entry.provider,
+      host: entry.host,
+      src: src ? demoStr(src) : null,
+      demoId: src ? parseDemoId(src) : null,
+      detection: detection,
+      hasEvents: !!entry.events
+    };
+    demoDetected[key] = embed;
+
+    // Shallow account-level signal: "a demo is on this page and the page
+    // was loaded". Sent for every detected embed, deliberately marked
+    // iframe_only so the backend can tell it apart from a real engagement
+    // event. It is never proof of engagement — no scanner, unfurler or
+    // prerender ever advances a demo step, so demo_progress /
+    // demo_complete carry the weight.
+    emitDemo('demo_view', embed, { detection: 'iframe_only' });
+
+    attachProviderEvents(embed);
+    return embed;
+  }
+
+  // Look up (or lazily create) the embed record a cross-frame event
+  // belongs to. Messages can arrive from an iframe we never saw — inside
+  // a shadow root, say — so origin validation is the authority, not the
+  // DOM scan.
+  function embedForOrigin(origin) {
+    var host = hostFromOrigin(origin);
+    if (!host) return null;
+    var entry = entryForHost(host);
+    if (!entry) return null;
+    var key = entry.host + '|' + entry.provider;
+    if (demoDetected[key]) return demoDetected[key];
+    return registerEmbed(entry, null, 'postmessage');
+  }
+
+  function scanDemoEmbeds() {
+    try {
+      var frames = document.querySelectorAll('iframe[src]');
+      for (var i = 0; i < frames.length; i++) {
+        var src = frames[i].getAttribute('src');
+        if (!src) continue;
+        var entry = entryForIframe(src);
+        if (entry) registerEmbed(entry, src, 'iframe');
+      }
+    } catch (e) {}
+    detectNavatticWithoutIframe();
+    detectWistiaWithoutIframe();
+  }
+
+  // Navattic also embeds without an iframe: the loader script, elements
+  // carrying data-navattic-* attributes, and a NavatticEmbed global. CSS
+  // has no attribute-prefix selector, so the documented attributes are
+  // enumerated.
+  function detectNavatticWithoutIframe() {
+    try {
+      var entry = entryForHost('js.navattic.com');
+      if (!entry) return;
+      var key = entry.host + '|' + entry.provider;
+      if (demoDetected[key]) return;
+      if (window.NavatticEmbed || window.navattic) {
+        registerEmbed(entry, null, 'global');
+        return;
+      }
+      if (document.querySelector('script[src*="js.navattic.com"], script[src*="navattic.com/embeds"]')) {
+        registerEmbed(entry, null, 'script');
+        return;
+      }
+      if (document.querySelector(
+        '[data-navattic],[data-navattic-id],[data-navattic-flow],' +
+        '[data-navattic-embed],[data-navattic-project],[data-navattic-demo]'
+      )) {
+        registerEmbed(entry, null, 'attribute');
+      }
+    } catch (e) {}
+  }
+
+  // Wistia inline embeds are divs, not iframes — _wq / Wistia globals are
+  // the only tell.
+  function detectWistiaWithoutIframe() {
+    try {
+      if (!window._wq && !window.Wistia) return;
+      var entry = entryForHost('fast.wistia.net');
+      if (!entry) return;
+      var key = entry.host + '|' + entry.provider;
+      if (demoDetected[key]) return;
+      registerEmbed(entry, null, 'global');
+    } catch (e) {}
+  }
+
+  function queueDemoScan() {
+    if (demoScanQueued) return;
+    demoScanQueued = true;
+    setTimeout(function () {
+      demoScanQueued = false;
+      scanDemoEmbeds();
+      // Demos are almost always the only one on a page, so stop watching
+      // as soon as one is found. Each host is deduped independently, so a
+      // second platform on the same page is still picked up by the
+      // post-config re-scan.
+      if (demoObserver && hasAnyDemo()) {
+        try { demoObserver.disconnect(); } catch (e) {}
+        demoObserver = null;
+      }
+    }, 250);
+  }
+
+  function hasAnyDemo() {
+    for (var k in demoDetected) {
+      if (Object.prototype.hasOwnProperty.call(demoDetected, k)) return true;
+    }
+    return false;
+  }
+
+  function startDemoObserver() {
+    try {
+      if (!window.MutationObserver) return;
+      demoObserver = new MutationObserver(queueDemoScan);
+      demoObserver.observe(document.documentElement, {
+        childList: true, subtree: true
+      });
+      // Hard stop: a page that never embeds a demo shouldn't keep an
+      // observer alive for the whole session.
+      setTimeout(function () {
+        if (demoObserver) {
+          try { demoObserver.disconnect(); } catch (e) {}
+          demoObserver = null;
+        }
+      }, 30000);
+    } catch (e) {}
+  }
+
+  // ---- Per-provider event subscription -------------------------------
+
+  function attachProviderEvents(embed) {
+    if (!embed || !embed.hasEvents) return;
+    if (embed.provider === 'navattic') hookNavattic(embed);
+    else if (embed.provider === 'wistia') hookWistia(embed);
+    else if (embed.provider === 'vidyard') hookVidyard(embed);
+    // storylane / supademo / navless / guidde / instruqt / tella are all
+    // postMessage-based and served by the single listener below.
+  }
+
+  /* -- Storylane ----------------------------------------------------- */
+  /* Cross-Frame Events. The envelope is
+     { message: 'storylane-demo-event',
+       payload: { event, demo: { id, url, name }, lead: { email, ... },
+                  step: { id, index }, flow: { id, name } } }
+     step.index is 1-based — used verbatim as step_index.                */
+  function handleStorylane(embed, data) {
+    if (!data || data.message !== 'storylane-demo-event') return;
+    var payload = data.payload;
+    if (!payload || typeof payload !== 'object') return;
+    var name = demoStr(payload.event);
+    if (!name) return;
+
+    var demo = (payload.demo && typeof payload.demo === 'object') ? payload.demo : null;
+    if (demo) {
+      if (!embed.demoId) embed.demoId = demoStr(demo.id);
+      if (!embed.src) embed.src = demoStr(demo.url);
+    }
+
+    if (name === 'lead_identify') {
+      var lead = (payload.lead && typeof payload.lead === 'object') ? payload.lead : null;
+      var email = lead ? demoEmail(lead.email) : null;
+      if (email) {
+        // Straight into the existing identity path — it lowercases,
+        // validates, dedups and hashes. No second path.
+        publicIdentify(email, { source: 'demo_storylane' });
+      }
+      emitDemo('demo_lead_captured', embed, { demo_event_name: name });
+      return;
+    }
+
+    if (STORYLANE_PROGRESS[name]) {
+      var step = (payload.step && typeof payload.step === 'object') ? payload.step : null;
+      var idx = step ? demoNum(step.index) : null;
+      var key = step ? (demoStr(step.id) || idx) : null;
+      var depth = noteStep(embed.provider, key === null ? idx : key);
+      emitDemo('demo_progress', embed, {
+        demo_event_name: name, step_index: idx, step_depth: depth
+      });
+      return;
+    }
+    if (STORYLANE_COMPLETE[name]) {
+      emitDemo('demo_complete', embed, {
+        demo_event_name: name,
+        step_depth: stepDepth(embed.provider),
+        completion_pct: 100
+      });
+      return;
+    }
+    if (STORYLANE_VIEW[name]) {
+      emitDemo('demo_view', embed, { demo_event_name: name });
+    }
+    // Everything else (page_view, convert_cta, primary_cta,
+    // secondary_cta, open_external_url) is deliberately ignored: it is
+    // in-demo UI noise, not demo engagement depth.
+  }
+
+  /* -- Supademo ------------------------------------------------------ */
+  /* Embed Events API. Discriminated by data.source === 'Supademo'; the
+     name is the Supademo:* string. Supademo:progress carries a
+     `percentage` field.                                                 */
+  function handleSupademo(embed, data) {
+    if (!data || data.source !== 'Supademo') return;
+    var name = demoStr(data.event) || demoStr(data.type);
+    if (!name) return;
+    var pct = demoNum(data.percentage);
+
+    if (SUPADEMO_PROGRESS[name]) {
+      var depth = noteStep(embed.provider, demoNum(data.index));
+      emitDemo('demo_progress', embed, {
+        demo_event_name: name,
+        step_index: demoNum(data.index),
+        step_depth: depth,
+        completion_pct: pct
+      });
+      return;
+    }
+    if (SUPADEMO_COMPLETE[name]) {
+      emitDemo('demo_complete', embed, {
+        demo_event_name: name,
+        step_depth: stepDepth(embed.provider),
+        completion_pct: pct === null ? 100 : pct
+      });
+      return;
+    }
+    if (SUPADEMO_VIEW[name]) {
+      emitDemo('demo_view', embed, { demo_event_name: name });
+    }
+    // Supademo:load and Supademo:close are lifecycle noise, not engagement.
+  }
+
+  /* -- Navless (formerly Tourial) ------------------------------------ */
+  /* message events of type TOURIAL_EVENT. FORM_SUBMIT carries formId and
+     zero field values — there is no email to read, so we don't look.     */
+  function handleNavless(embed, data) {
+    if (!data || data.type !== 'TOURIAL_EVENT') return;
+    var name = demoStr(data.event) || demoStr(data.name) ||
+      demoStr(data.payload && data.payload.event);
+    if (!name) return;
+
+    if (NAVLESS_PROGRESS[name]) {
+      var formId = demoStr(data.formId) ||
+        demoStr(data.payload && data.payload.formId);
+      var fields = {
+        demo_event_name: name,
+        step_depth: noteStep(embed.provider, name + ':' + (formId || ''))
+      };
+      if (formId) fields.form_id = formId;
+      emitDemo('demo_progress', embed, fields);
+      return;
+    }
+    if (NAVLESS_VIEW[name]) {
+      emitDemo('demo_view', embed, { demo_event_name: name });
+    }
+  }
+
+  /* -- Guidde -------------------------------------------------------- */
+  /* Broadcasts a JSON *string*, shaped
+     { context: 'player.js', version, event }. A 95%-watched milestone
+     arrives as the event `guidde-mark-as-completed`.                     */
+  function handleGuidde(embed, data) {
+    var parsed = data;
+    if (typeof data === 'string') {
+      if (data.length > 4096) return;
+      try { parsed = JSON.parse(data); } catch (e) { return; }
+    }
+    if (!parsed || typeof parsed !== 'object') return;
+    if (parsed.context !== 'player.js') return;
+    var name = demoStr(parsed.event);
+    if (!name) return;
+
+    if (name === 'guidde-mark-as-completed' || name === 'ended') {
+      emitDemo('demo_complete', embed, {
+        demo_event_name: name, completion_pct: 100
+      });
+      return;
+    }
+    if (name === 'timeupdate' || name === 'progress' || name === 'seeked') {
+      emitDemo('demo_progress', embed, {
+        demo_event_name: name,
+        step_depth: noteStep(embed.provider, name)
+      });
+      return;
+    }
+    if (name === 'play' || name === 'ready') {
+      emitDemo('demo_view', embed, { demo_event_name: name });
+    }
+  }
+
+  /* -- Instruqt ------------------------------------------------------ */
+  /* track.* events. The payload shape is unconfirmed, so only the event
+     name is read and nothing else is trusted.                            */
+  function handleInstruqt(embed, data) {
+    if (!data || typeof data !== 'object') return;
+    var name = demoStr(data.event) || demoStr(data.type) || demoStr(data.action);
+    if (!name || name.indexOf('track.') !== 0) return;
+
+    if (INSTRUQT_COMPLETE[name]) {
+      emitDemo('demo_complete', embed, {
+        demo_event_name: name,
+        step_depth: stepDepth(embed.provider),
+        completion_pct: 100
+      });
+      return;
+    }
+    if (INSTRUQT_PROGRESS[name]) {
+      emitDemo('demo_progress', embed, {
+        demo_event_name: name,
+        step_depth: noteStep(embed.provider, name)
+      });
+      return;
+    }
+    if (INSTRUQT_VIEW[name]) {
+      emitDemo('demo_view', embed, { demo_event_name: name });
+    }
+  }
+
+  /* -- Tella --------------------------------------------------------- */
+  /* ready / playbackState / timeUpdate. timeUpdate fires roughly every
+     250ms carrying currentTime + duration, so it is thresholded to
+     25/50/75% rather than forwarded verbatim.                            */
+  var tellaMilestones = {};
+  function handleTella(embed, data) {
+    if (!data || typeof data !== 'object') return;
+    var name = demoStr(data.type) || demoStr(data.event);
+    if (!name) return;
+
+    if (name === 'timeUpdate') {
+      var cur = demoNum(data.currentTime);
+      var dur = demoNum(data.duration);
+      if (cur === null || !dur || dur <= 0) return;
+      var pct = Math.round((cur / dur) * 100);
+      var bucket = pct >= 95 ? 95 : pct >= 75 ? 75 : pct >= 50 ? 50 : pct >= 25 ? 25 : 0;
+      if (!bucket || tellaMilestones[bucket]) return;
+      tellaMilestones[bucket] = 1;
+      emitDemo(bucket >= 95 ? 'demo_complete' : 'demo_progress', embed, {
+        demo_event_name: name,
+        step_depth: noteStep(embed.provider, 'pct:' + bucket),
+        completion_pct: bucket
+      });
+      return;
+    }
+    if (name === 'ready' || name === 'playbackState') {
+      emitDemo('demo_view', embed, { demo_event_name: name });
+    }
+  }
+
+  /* -- The single message listener ----------------------------------- */
+
+  try {
+    window.addEventListener('message', function (ev) {
+      try {
+        // Origin is the gate. Exact host match against the registry;
+        // anything else is dropped without reading a single field.
+        var embed = embedForOrigin(ev.origin);
+        if (!embed || !embed.hasEvents) return;
+        var data = ev.data;
+        if (data === null || data === undefined) return;
+        if (typeof data !== 'object' && typeof data !== 'string') return;
+
+        if (embed.provider === 'storylane') handleStorylane(embed, data);
+        else if (embed.provider === 'supademo') handleSupademo(embed, data);
+        else if (embed.provider === 'navless') handleNavless(embed, data);
+        else if (embed.provider === 'guidde') handleGuidde(embed, data);
+        else if (embed.provider === 'instruqt') handleInstruqt(embed, data);
+        else if (embed.provider === 'tella') handleTella(embed, data);
+      } catch (e) {}
+    }, false);
+  } catch (e) {}
+
+  /* -- Navattic (JS SDK) --------------------------------------------- */
+  /* navattic.onEvent(cb). The global appears once embeds.js has loaded,
+     so we poll for ~10s after detecting the embed and then give up.
+     navattic.identify() is Navattic's to call, not ours.                 */
+  function classifyNavattic(name) {
+    if (NAVATTIC_COMPLETE[name]) return 'demo_complete';
+    if (NAVATTIC_PROGRESS[name]) return 'demo_progress';
+    if (NAVATTIC_VIEW[name]) return 'demo_view';
+    return null;
+  }
+
+  // The email rides in a properties[] array. Only entries that are both
+  // object === 'END_USER' and source === 'FORM' are self-declared —
+  // source === 'ENRICHMENT' is Clearbit's inference about the company,
+  // and feeding that into the identity cache would poison it.
+  function navatticFormEmail(evt) {
+    try {
+      var props = evt && evt.properties;
+      if (!props || !props.length) return null;
+      for (var i = 0; i < props.length; i++) {
+        var p = props[i];
+        if (!p || p.object !== 'END_USER' || p.source !== 'FORM') continue;
+        var email = demoEmail(p.value) || demoEmail(p.email);
+        if (email) return email;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function hookNavattic(embed) {
+    if (navatticHooked) return;
+    navatticHooked = true;
+    var waited = 0;
+    var timer = setInterval(function () {
+      try {
+        var nv = window.navattic;
+        if (!nv || typeof nv.onEvent !== 'function') {
+          waited += 500;
+          if (waited >= 10000) clearInterval(timer);
+          return;
+        }
+        clearInterval(timer);
+        nv.onEvent(function (evt) {
+          try {
+            if (!evt || typeof evt !== 'object') return;
+            var name = demoStr(evt.type) || demoStr(evt.event) || demoStr(evt.name);
+            if (!name) return;
+
+            var email = navatticFormEmail(evt);
+            if (email) {
+              publicIdentify(email, { source: 'demo_navattic' });
+              emitDemo('demo_lead_captured', embed, { demo_event_name: name });
+            }
+
+            var mapped = classifyNavattic(name);
+            if (!mapped) return;
+            var stepId = demoStr(evt.step_id) ||
+              demoStr(evt.properties && evt.properties.step_id);
+            var fields = { demo_event_name: name };
+            if (mapped === 'demo_progress') {
+              fields.step_depth = noteStep(embed.provider, stepId || name);
+            } else if (mapped === 'demo_complete') {
+              fields.step_depth = stepDepth(embed.provider);
+              fields.completion_pct = 100;
+            }
+            emitDemo(mapped, embed, fields);
+          } catch (e) {}
+        });
+      } catch (e) {
+        clearInterval(timer);
+      }
+    }, 500);
+  }
+
+  /* -- Wistia (player API) ------------------------------------------- */
+  /* _wq is the documented pre-load command queue, so pushing before
+     E-v1.js arrives is correct. `conversion` hands the gated email to
+     the parent page client-side; `percentwatchedchanged` is thresholded. */
+  function hookWistia(embed) {
+    if (wistiaHooked) return;
+    wistiaHooked = true;
+    try {
+      var milestones = {};
+      window._wq = window._wq || [];
+      window._wq.push({
+        id: '_all',
+        onReady: function (video) {
+          try {
+            if (!embed.demoId && typeof video.hashedId === 'function') {
+              embed.demoId = demoStr(video.hashedId());
+            }
+            emitDemo('demo_view', embed, { demo_event_name: 'onReady' });
+
+            video.bind('conversion', function (type, email, firstName, lastName) {
+              try {
+                var clean = demoEmail(email);
+                if (clean) {
+                  var traits = { source: 'demo_wistia', conversion_type: demoStr(type) };
+                  var fn = demoStr(firstName);
+                  var ln = demoStr(lastName);
+                  if (fn) traits.first_name = fn;
+                  if (ln) traits.last_name = ln;
+                  publicIdentify(clean, traits);
+                }
+                emitDemo('demo_lead_captured', embed, {
+                  demo_event_name: 'conversion:' + (demoStr(type) || 'unknown')
+                });
+              } catch (e) {}
+            });
+
+            video.bind('percentwatchedchanged', function (percent) {
+              try {
+                var pct = Math.round((demoNum(percent) || 0) * 100);
+                var bucket = pct >= 95 ? 95 : pct >= 75 ? 75 : pct >= 50 ? 50 : pct >= 25 ? 25 : 0;
+                if (!bucket || milestones[bucket]) return;
+                milestones[bucket] = 1;
+                emitDemo(bucket >= 95 ? 'demo_complete' : 'demo_progress', embed, {
+                  demo_event_name: 'percentwatchedchanged',
+                  step_depth: noteStep(embed.provider, 'pct:' + bucket),
+                  completion_pct: bucket
+                });
+              } catch (e) {}
+            });
+          } catch (e) {}
+        }
+      });
+    } catch (e) {}
+  }
+
+  /* -- Vidyard (player API) ------------------------------------------ */
+  /* The embed script invokes window.onVidyardAPI once ready, so we chain
+     any handler the customer already installed rather than clobber it.   */
+  function hookVidyard(embed) {
+    if (vidyardHooked) return;
+    vidyardHooked = true;
+    try {
+      var milestones = {};
+      function bindPlayer(player) {
+        try {
+          if (!player || typeof player.on !== 'function') return;
+          if (!embed.demoId) embed.demoId = demoStr(player.uuid);
+          emitDemo('demo_view', embed, { demo_event_name: 'ready' });
+          player.on('play', function () {
+            emitDemo('demo_view', embed, { demo_event_name: 'play' });
+          });
+          if (typeof player.progressEvents === 'function') {
+            player.progressEvents(function (pct) {
+              try {
+                var bucket = demoNum(pct);
+                if (bucket === null || milestones[bucket]) return;
+                milestones[bucket] = 1;
+                emitDemo(bucket >= 95 ? 'demo_complete' : 'demo_progress', embed, {
+                  demo_event_name: 'progressEvents',
+                  step_depth: noteStep(embed.provider, 'pct:' + bucket),
+                  completion_pct: bucket
+                });
+              } catch (e) {}
+            }, [25, 50, 75, 95]);
+          }
+          player.on('videoComplete', function () {
+            emitDemo('demo_complete', embed, {
+              demo_event_name: 'videoComplete', completion_pct: 100
+            });
+          });
+        } catch (e) {}
+      }
+      var previous = window.onVidyardAPI;
+      window.onVidyardAPI = function (api) {
+        try {
+          if (typeof previous === 'function') previous(api);
+        } catch (e) {}
+        try {
+          if (api && api.api && typeof api.api.addReadyListener === 'function') {
+            api.api.addReadyListener(function (_, player) { bindPlayer(player); });
+          }
+        } catch (e) {}
+      };
+      if (window.VidyardV4) window.onVidyardAPI(window.VidyardV4);
+    } catch (e) {}
+  }
+
+  /* -- Init ----------------------------------------------------------- */
+
+  function initDemoDetection() {
+    if (demoInitDone) return;
+    demoInitDone = true;
+    try {
+      scanDemoEmbeds();
+      startDemoObserver();
+    } catch (e) {}
+  }
+
+  try {
+    if (isPrerendering()) {
+      // Prerendered pages run JS for a visit that may never happen. Hold
+      // detection until the user actually activates the page.
+      document.addEventListener('prerenderingchange', initDemoDetection, { once: true });
+    } else {
+      initDemoDetection();
+    }
+  } catch (e) {
+    initDemoDetection();
+  }
 })();
