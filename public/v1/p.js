@@ -1234,12 +1234,17 @@
     demoDetected[key] = embed;
 
     // Shallow account-level signal: "a demo is on this page and the page
-    // was loaded". Sent for every detected embed, deliberately marked
-    // iframe_only so the backend can tell it apart from a real engagement
-    // event. It is never proof of engagement — no scanner, unfurler or
-    // prerender ever advances a demo step, so demo_progress /
-    // demo_complete carry the weight.
-    emitDemo('demo_view', embed, { detection: 'iframe_only' });
+    // was loaded". `iframe_only` is the sentinel for detection-without-
+    // engagement, so the backend can separate it from a real engagement
+    // event — no scanner, unfurler or prerender ever advances a demo
+    // step, so demo_progress / demo_complete carry the weight.
+    //
+    // Skipped when the embed was discovered *by* a cross-frame event:
+    // that is engagement, and the handler is about to report it properly.
+    // Labelling it shallow would be a lie.
+    if (detection !== 'postmessage') {
+      emitDemo('demo_view', embed, { detection: 'iframe_only' });
+    }
 
     attachProviderEvents(embed);
     return embed;
