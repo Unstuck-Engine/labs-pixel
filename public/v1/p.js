@@ -969,6 +969,7 @@
   var demoPending = [];        // events buffered until /v1/config resolves
   var demoPolicySettled = false;
   var demoObserver = null;
+  var demoDetectCount = 0;     // total embeds ever registered
   var demoScanQueued = false;
   var demoInitDone = false;
   var wistiaHooked = false;
@@ -1232,6 +1233,7 @@
       hasEvents: !!entry.events
     };
     demoDetected[key] = embed;
+    demoDetectCount++;
 
     // Shallow account-level signal: "a demo is on this page and the page
     // was loaded". `iframe_only` is the sentinel for detection-without-
@@ -1323,23 +1325,17 @@
     demoScanQueued = true;
     setTimeout(function () {
       demoScanQueued = false;
+      // Disconnect only when THIS scan matched something new. Keying off
+      // "any demo detected" would tear the observer down on the first
+      // unrelated DOM mutation after a bootstrap-time match, and a
+      // lazy-loaded demo would then never be seen.
+      var before = demoDetectCount;
       scanDemoEmbeds();
-      // Demos are almost always the only one on a page, so stop watching
-      // as soon as one is found. Each host is deduped independently, so a
-      // second platform on the same page is still picked up by the
-      // post-config re-scan.
-      if (demoObserver && hasAnyDemo()) {
+      if (demoObserver && demoDetectCount > before) {
         try { demoObserver.disconnect(); } catch (e) {}
         demoObserver = null;
       }
     }, 250);
-  }
-
-  function hasAnyDemo() {
-    for (var k in demoDetected) {
-      if (Object.prototype.hasOwnProperty.call(demoDetected, k)) return true;
-    }
-    return false;
   }
 
   function startDemoObserver() {
