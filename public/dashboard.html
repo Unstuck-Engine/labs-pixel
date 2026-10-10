@@ -94,13 +94,42 @@ let lastData=null, lastVisits=[], lastRange='7', lastTz='UTC';
 const matrixFilters={ip_class:new Set(), snitcher_type:new Set(), leadfeeder_type:new Set(), snitcher:new Set()};
 let openFilter=null; // which dropdown stays open across re-renders
 
+// The dashboard token rides the URL fragment (#token=...), which a browser
+// never sends to any server, and reaches the API in a header. Without it the
+// API refuses every request. Everything after "#token=" is the token, read
+// raw: URLSearchParams would turn a base64 "+" into a space and cut at "&".
+function tokenHeaders(){
+  const m=/^#token=(.+)$/.exec(location.hash);
+  if(!m) return {};
+  let t=m[1];
+  try{ t=decodeURIComponent(t); }catch(e){}
+  return {'x-dashboard-token':t};
+}
+
+// A plain link cannot carry the token header, so the CSV is fetched with it
+// and handed to the browser as a download under the server's own filename.
+async function downloadCsv(href){
+  const err=document.getElementById('err'); err.textContent='';
+  try{
+    const res=await fetch(href,{headers:tokenHeaders()});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const m=/filename="([^"]+)"/.exec(res.headers.get('content-disposition')||'');
+    const url=URL.createObjectURL(await res.blob());
+    const a=document.createElement('a');
+    a.href=url; a.download=m ? m[1] : '';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(e){ err.textContent='Failed to load: '+e.message; }
+}
+
 async function load(){
   const err=document.getElementById('err'); err.textContent='';
   const range=document.getElementById('range').value, tz=document.getElementById('tz').value;
+  const headers={accept:'application/json',...tokenHeaders()};
   try{
     const [res, vres]=await Promise.all([
-      fetch(`/v1/dashboard-data?days=${range}&tz=${encodeURIComponent(tz)}`,{headers:{accept:'application/json'}}),
-      fetch(`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}`,{headers:{accept:'application/json'}}),
+      fetch(`/v1/dashboard-data?days=${range}&tz=${encodeURIComponent(tz)}`,{headers}),
+      fetch(`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}`,{headers}),
     ]);
     if(!res.ok) throw new Error('HTTP '+res.status);
     lastData=await res.json(); lastVisits=vres.ok ? (await vres.json()).rows||[] : []; lastRange=range; lastTz=tz;
@@ -192,6 +221,7 @@ function render(d, visits, range, tz){
     '"Human" = our user-agent classifier (bots faking real browsers pass it — check IP class). IP class = free rDNS/ASN verdict; snit/lf type = Snitcher business|isp / Leadfeeder company|shared_network for that IP. The snitcher column carries the full verdict: domain = identified business; isp/educational = classified non-business; pending = session received, not yet enriched; no_session = Radar never saw this visitor (strong bot tell). × = answered with no match; blank = never asked. Time on site = seconds between first and last pageview.'));
   const dl=el('a',{text:'⬇ Download CSV (full)',cls:'tag'});
   dl.href=`/v1/dashboard-data?report=visits&days=${range}&tz=${encodeURIComponent(tz)}&format=csv`;
+  dl.addEventListener('click',ev=>{ ev.preventDefault(); downloadCsv(dl.href); });
   dl.style.textDecoration='none';
   const fbar=el('div',{cls:'bar'});
   fbar.appendChild(multiSelect('ip_class','IP class',classOptions('ip_class',visits)));

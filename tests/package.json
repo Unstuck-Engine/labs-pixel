@@ -1,0 +1,13 @@
+{
+  "name": "labs-pixel-tests",
+  "private": true,
+  "description": "Tests for public/v1/p.js, run in jsdom with node:test.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

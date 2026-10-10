@@ -8,8 +8,8 @@ Hosts `pixel.unstuckengine.com` — the customer-facing tracking-script endpoint
 
 This is a tiny Vercel-hosted edge proxy. Two things live here:
 
-1. **Static tracking script** at `/v1/p.js` — served from `public/v1/p.js`. Currently a v0 stub; full implementation lands in companion spec 7.6.1.
-2. **Domain-rewrite proxy** at `/v1/config`, `/v1/events`, `/v1/identify` — `vercel.json` rewrites these paths to the corresponding Supabase Edge Functions on the Labs project (`dbylvdycfnmsdxlmghhz`). Customer browsers never see a `*.supabase.co` URL.
+1. **Static tracking script** at `/v1/p.js` — served from `public/v1/p.js`. The full script from companion spec 7.6.1: consent deferral, Do Not Track, URL-parameter identify, auto-tracking and hosted-demo mode. Tests live in `tests/`.
+2. **Domain-rewrite proxy** at `/v1/config`, `/v1/events` (page views, custom events and `identify`), `/v1/dashboard-data`, `/v1/demo/*` — `vercel.json` rewrites these paths to the corresponding Supabase Edge Functions on the Labs project (`dbylvdycfnmsdxlmghhz`). Customer browsers never see a `*.supabase.co` URL.
 
 This setup costs $0 (Vercel free tier) instead of $10/month for Supabase's custom-domain feature.
 
