@@ -96,10 +96,14 @@ let openFilter=null; // which dropdown stays open across re-renders
 
 // The dashboard token rides the URL fragment (#token=...), which a browser
 // never sends to any server, and reaches the API in a header. Without it the
-// API refuses every request.
+// API refuses every request. Everything after "#token=" is the token, read
+// raw: URLSearchParams would turn a base64 "+" into a space and cut at "&".
 function tokenHeaders(){
-  const t=new URLSearchParams(location.hash.slice(1)).get('token');
-  return t ? {'x-dashboard-token':t} : {};
+  const m=/^#token=(.+)$/.exec(location.hash);
+  if(!m) return {};
+  let t=m[1];
+  try{ t=decodeURIComponent(t); }catch(e){}
+  return {'x-dashboard-token':t};
 }
 
 // A plain link cannot carry the token header, so the CSV is fetched with it
