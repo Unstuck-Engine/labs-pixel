@@ -1,0 +1,32 @@
+# Runs the p.js tests (tests/, node:test + jsdom) on every PR that touches the
+# script, the tests or this file. p.js runs on customer sites, so a regression
+# in consent deferral, Do Not Track, the u_* parameters or the identify path is
+# a privacy or data defect on someone else's page. One job: Actions bills a
+# 1-minute minimum per job and the suite runs in a few seconds.
+name: pixel-tests
+on:
+  pull_request:
+    paths:
+      - 'public/v1/p.js'
+      - 'tests/**'
+      - '.github/workflows/pixel-tests.yml'
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: tests/package-lock.json
+      - run: npm ci
+      - run: npm test
