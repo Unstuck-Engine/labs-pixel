@@ -983,14 +983,14 @@
 
   // SPA page-view tracking via popstate + pushState/replaceState wrap.
   function spaPageView() {
-    // Off-site mode: one page_view per load opens the visit. Demo platforms
-    // rewrite the URL on every step (replaceState), and the steps already
-    // arrive as demo_progress.
-    if (demoMode) return;
     if (policy && isExcluded(location.href, policy.excluded_urls)) return;
     sendExit();               // capture dwell of the page we're leaving
     pageEnterTs = Date.now();  // reset timer for the new page
     applyPageEngagement(location.href);
+    // Off-site mode: one page_view per load opens the visit. Demo platforms
+    // rewrite the URL on every step (replaceState), and the steps already
+    // arrive as demo_progress.
+    if (demoMode) return;
     sendEvent('page_view', { spa: true });
   }
   window.addEventListener('popstate', spaPageView);
