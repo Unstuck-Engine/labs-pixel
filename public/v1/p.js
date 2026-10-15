@@ -46,13 +46,14 @@
  *      demo event ships human_interaction so the backend can discard
  *      email-security-scanner detonations (Defender Safe Links,
  *      Mimecast, Proofpoint all render pages with a real JS engine).
- *  12. DEMO MODE (data-demo-platform): the same file, pasted into a demo
- *      platform's own custom-code slot, so it runs ON the hosted demo
+ *  12. OFF-SITE MODE (data-demo-platform): the same file, pasted into a
+ *      demo/tool platform's own custom-code slot, so it runs ON the hosted
  *      page (app.storylane.io/share/<id>, app.arcade.software/share/<id>,
- *      ...). That page is off-site, so its events are Demo Viewed's, not
- *      Website Intent's, and they ship standalone:true for the backend to
- *      route on. Self-gated to the top-level document — see the block at
- *      the top of the IIFE.
+ *      ...). That page is off-site, so its visits are Off-site Intent's,
+ *      not Website Intent's: it sends page views, the demo events and
+ *      identify, with standalone:true. The backend decides the signal from
+ *      the host (the customer's tool list). Self-gated to the top-level
+ *      document — see the block at the top of the IIFE.
  *
  * Embeds blueimp-md5 inline (~1.6 kB minified — public domain) so HEM
  * computation doesn't depend on a second network request. SHA-256 uses
@@ -589,13 +590,14 @@
     }
   } catch (e) {}
 
-  // Demo mode ships a deliberately narrow event vocabulary. The page
-  // belongs to the demo platform, so page_view / heartbeat / exit /
-  // download / outbound_click would all land in clickstream_events
-  // against app.storylane.io and score as if the customer owned that
-  // page. Only the demo events and `identify` — which the identity
-  // waterfall runs on — leave a hosted demo page.
+  // Off-site mode ships a deliberately narrow event vocabulary. The page
+  // belongs to the platform, so heartbeat / exit / download /
+  // outbound_click stay home. page_view leaves (c67.6): it is what opens
+  // the Off-site visit on the backend, which counts the page by its host
+  // and never as the customer's own website. The demo events and
+  // `identify` — which the identity waterfall runs on — leave too.
   var DEMO_MODE_EVENTS = {
+    page_view: 1,
     demo_view: 1,
     demo_progress: 1,
     demo_complete: 1,
@@ -985,6 +987,10 @@
     sendExit();               // capture dwell of the page we're leaving
     pageEnterTs = Date.now();  // reset timer for the new page
     applyPageEngagement(location.href);
+    // Off-site mode: one page_view per load opens the visit. Demo platforms
+    // rewrite the URL on every step (replaceState), and the steps already
+    // arrive as demo_progress.
+    if (demoMode) return;
     sendEvent('page_view', { spa: true });
   }
   window.addEventListener('popstate', spaPageView);
