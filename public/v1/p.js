@@ -139,15 +139,49 @@
     var m = document.cookie.match('(?:^|; )' + name + '=([^;]*)');
     return m ? decodeURIComponent(m[1]) : null;
   }
+  // The registrable domain (acme.com for www.acme.com and blog.acme.com),
+  // found the way the browser defines it: the shortest parent it lets a
+  // cookie be set on. Public suffixes (co.uk, vercel.app) are refused by the
+  // browser, so they are never chosen. null on an IP or a single-label host:
+  // those keep a host-only cookie.
+  function registrableDomain() {
+    var host = location.hostname;
+    if (!host || host.indexOf('.') === -1 || /^[\d.]+$/.test(host) || host.indexOf(':') !== -1) return null;
+    var parts = host.split('.');
+    for (var i = parts.length - 2; i >= 0; i--) {
+      var cand = parts.slice(i).join('.');
+      document.cookie = '__unstuck_probe=1; domain=' + cand + '; path=/; SameSite=Lax';
+      if (getCookie('__unstuck_probe') === '1') {
+        document.cookie = '__unstuck_probe=; expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=' + cand + '; path=/; SameSite=Lax';
+        return cand;
+      }
+    }
+    return null;
+  }
+  // Found on the first cookie write, so a visitor the privacy gates stop
+  // never gets even the probe cookie.
+  var cookieDomain;
+
+  // The visitor cookie lives on the registrable domain, so www.acme.com and
+  // blog.acme.com are one visitor. A host-only copy an earlier version of this
+  // script set is expired first; the value read before the write carries over,
+  // so the visitor id does not change.
   function setCookie(name, value, days) {
     var d = new Date();
     d.setTime(d.getTime() + days * 86400000);
+    if (cookieDomain === undefined) {
+      try { cookieDomain = registrableDomain(); } catch (e) { cookieDomain = null; }
+    }
+    if (cookieDomain) {
+      document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax';
+    }
     document.cookie =
       name +
       '=' +
       encodeURIComponent(value) +
       '; expires=' +
       d.toUTCString() +
+      (cookieDomain ? '; domain=' + cookieDomain : '') +
       '; path=/; SameSite=Lax';
   }
   function uuid() {
@@ -171,10 +205,10 @@
   /* -------------------------------------------------------------- */
 
   var vid = getCookie(VID_COOKIE);
-  if (!vid) {
-    vid = uuid();
-    setCookie(VID_COOKIE, vid, 365);
-  }
+  if (!vid) vid = uuid();
+  // Written on every load: moves a host-only cookie onto the registrable
+  // domain and keeps the 365 days rolling.
+  setCookie(VID_COOKIE, vid, 365);
   var sid = sessionStorage.getItem(SID_KEY);
   var freshSession = false;
   if (!sid) {
@@ -606,6 +640,9 @@
       screen_w: screenW,
       screen_h: screenH,
       utm: sessionUtm || undefined,
+      // The page's consent state on every event: the cross-site POST carries
+      // no cookie, so the body is the only way it reaches ingest.
+      consent: consentGranted ? 'granted' : 'absent',
     };
     if (extra) {
       for (var k in extra) {
