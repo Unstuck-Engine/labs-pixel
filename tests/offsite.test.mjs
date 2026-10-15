@@ -41,6 +41,29 @@ describe('off-site mode (data-demo-platform)', () => {
     } finally { px.close(); }
   });
 
+  test('URL changes on an off-site page (demo steps) send no further page_view', async () => {
+    const px = loadPixel({
+      url: 'https://app.storylane.io/share/abc123',
+      attrs: { 'data-demo-platform': 'storylane' },
+    });
+    try {
+      await waitFor(() => px.events('page_view').length === 1);
+      for (let i = 1; i <= 5; i++) px.window.history.replaceState({}, '', `/share/abc123?step=${i}`);
+      px.window.history.pushState({}, '', '/share/abc123/next');
+      await settle();
+      assert.equal(px.events('page_view').length, 1);
+    } finally { px.close(); }
+  });
+
+  test("on the customer's own site a URL change still sends a page_view", async () => {
+    const px = loadPixel({ url: 'https://acme.com/' });
+    try {
+      await waitFor(() => px.events('page_view').length === 1);
+      px.window.history.pushState({}, '', '/pricing');
+      await waitFor(() => px.events('page_view').length === 2);
+    } finally { px.close(); }
+  });
+
   test('identify still leaves an off-site page', async () => {
     const px = loadPixel({
       url: 'https://app.storylane.io/share/abc123',
