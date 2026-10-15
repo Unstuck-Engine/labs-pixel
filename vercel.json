@@ -1,6 +1,46 @@
 {
   "rewrites": [
     {
+      "source": "/mcp",
+      "has": [
+        {
+          "type": "host",
+          "value": "mcp.unstuckengine.com"
+        }
+      ],
+      "destination": "https://bbcieojxzqewzrbtrrsd.supabase.co/functions/v1/mcp"
+    },
+    {
+      "source": "/mcp/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "mcp.unstuckengine.com"
+        }
+      ],
+      "destination": "https://bbcieojxzqewzrbtrrsd.supabase.co/functions/v1/mcp/:path*"
+    },
+    {
+      "source": "/.well-known/oauth-protected-resource",
+      "has": [
+        {
+          "type": "host",
+          "value": "mcp.unstuckengine.com"
+        }
+      ],
+      "destination": "https://bbcieojxzqewzrbtrrsd.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource"
+    },
+    {
+      "source": "/.well-known/oauth-protected-resource/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "mcp.unstuckengine.com"
+        }
+      ],
+      "destination": "https://bbcieojxzqewzrbtrrsd.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource/:path*"
+    },
+    {
       "source": "/v1/config",
       "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/pixel-config-loader"
     },
