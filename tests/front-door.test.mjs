@@ -54,6 +54,36 @@ describe('visitor cookie on the registrable domain', () => {
     } finally { px.close(); }
   });
 
+  test('a visitor with old host-only ids on both www and apex converges on one id and keeps it', async () => {
+    const jar = new CookieJar();
+    jar.setCookieSync('__unstuck_vid=A-apex; Path=/', 'https://acme.com/');
+    jar.setCookieSync('__unstuck_vid=B-www; Path=/', 'https://www.acme.com/');
+    const seen = [];
+    for (const url of ['https://www.acme.com/', 'https://acme.com/', 'https://www.acme.com/a', 'https://acme.com/b']) {
+      const px = loadPixel({ url, cookieJar: jar });
+      try {
+        await waitFor(() => px.events('page_view').length === 1);
+        seen.push(px.events('page_view')[0].body.visitor_id);
+      } finally { px.close(); }
+    }
+    assert.deepEqual(seen, ['B-www', 'B-www', 'B-www', 'B-www'], 'the first domain copy wins and never flips');
+    assert.deepEqual(vidCookies(jar, 'https://acme.com/').map((c) => `${c.value}@${c.domain}`), ['B-www@acme.com']);
+    assert.deepEqual(vidCookies(jar, 'https://www.acme.com/').map((c) => `${c.value}@${c.domain}`), ['B-www@acme.com']);
+  });
+
+  test('an existing domain cookie is not rewritten (its expiry is not rolled forward)', async () => {
+    const jar = new CookieJar();
+    const expires = new Date(Date.now() + 10 * 86400000).toUTCString();
+    jar.setCookieSync(`__unstuck_vid=u-kept; Domain=acme.com; Path=/; Expires=${expires}`, 'https://www.acme.com/');
+    const px = loadPixel({ url: 'https://www.acme.com/', cookieJar: jar });
+    try {
+      await waitFor(() => px.events('page_view').length === 1);
+      const [c] = vidCookies(jar, 'https://www.acme.com/');
+      assert.equal(c.value, 'u-kept');
+      assert.equal(new Date(c.expires).toUTCString(), expires);
+    } finally { px.close(); }
+  });
+
   test('an IP host keeps a host-only cookie', async () => {
     const px = loadPixel({ url: 'http://127.0.0.1/' });
     try {
