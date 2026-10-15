@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test site - pricing</title>
+<script>
+  // Placeholder keys; the real ones are filled per host once the test workspaces' settings are saved.
+  var KEYS = {
+    "test-a.unstuckengine.com": "KEY_A",
+    "test-b.unstuckengine.com": "KEY_B",
+    "tool-test.unstuckengine.com": "KEY_A"
+  };
+  (function () {
+    var s = document.createElement("script");
+    s.async = true;
+    s.src = "https://pixel.unstuckengine.com/v1/p.js";
+    s.setAttribute("data-key", KEYS[location.host] || "KEY_UNMAPPED");
+    if (location.host === "tool-test.unstuckengine.com") s.setAttribute("data-demo-platform", "generic");
+    document.head.appendChild(s);
+  })();
+</script>
+</head>
+<body>
+<h1>Test site - pricing</h1>
+<p>Pixel test page. <a href="/">Home</a> · <a href="/pricing">Pricing</a> · <a href="/demo">Demo</a></p>
+</body>
+</html>
