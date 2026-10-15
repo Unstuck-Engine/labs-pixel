@@ -3,7 +3,7 @@
 // stubbed so every request the pixel makes is recorded instead of sent.
 import { readFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
-import { JSDOM, VirtualConsole } from 'jsdom';
+import { CookieJar, JSDOM, VirtualConsole } from 'jsdom';
 
 const PIXEL_SRC = readFileSync(new URL('../public/v1/p.js', import.meta.url), 'utf8');
 
@@ -15,6 +15,7 @@ export const HOST = 'https://pixel.unstuckengine.com';
 // opts.doNotTrack   navigator.doNotTrack value
 // opts.queue        window.UnstuckQueue calls made before the script loads
 // opts.session      sessionStorage entries already present (an earlier page in the tab)
+// opts.cookieJar    a jsdom CookieJar, to start with cookies an earlier page set
 export function loadPixel(opts = {}) {
   const calls = [];
   const attrs = { 'data-key': 'pk_test_123', ...(opts.attrs || {}) };
@@ -30,6 +31,7 @@ export function loadPixel(opts = {}) {
       url: opts.url || 'https://customer.example/pricing',
       runScripts: 'dangerously',
       virtualConsole,
+      cookieJar: opts.cookieJar || new CookieJar(),
       beforeParse(window) {
         Object.defineProperty(window, 'crypto', { value: webcrypto, configurable: true });
         window.TextEncoder = TextEncoder;
@@ -51,6 +53,7 @@ export function loadPixel(opts = {}) {
   const { window } = dom;
   return {
     window,
+    cookieJar: dom.cookieJar,
     calls,
     events: (type) => calls.filter((c) => c.url === `${HOST}/v1/events` && (!type || c.body?.event_type === type)),
     close: () => window.close(),

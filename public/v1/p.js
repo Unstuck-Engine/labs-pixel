@@ -139,15 +139,66 @@
     var m = document.cookie.match('(?:^|; )' + name + '=([^;]*)');
     return m ? decodeURIComponent(m[1]) : null;
   }
+  // The registrable domain (acme.com for www.acme.com and blog.acme.com),
+  // found the way the browser defines it: the shortest parent it lets a
+  // cookie be set on. Public suffixes (co.uk, vercel.app) are refused by the
+  // browser, so they are never chosen. null on an IP or a single-label host:
+  // those keep a host-only cookie.
+  function registrableDomain() {
+    var host = location.hostname;
+    if (!host || host.indexOf('.') === -1 || /^[\d.]+$/.test(host) || host.indexOf(':') !== -1) return null;
+    var parts = host.split('.');
+    for (var i = parts.length - 2; i >= 0; i--) {
+      var cand = parts.slice(i).join('.');
+      document.cookie = '__unstuck_probe=1; domain=' + cand + '; path=/; SameSite=Lax';
+      if (getCookie('__unstuck_probe') === '1') {
+        document.cookie = '__unstuck_probe=; expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=' + cand + '; path=/; SameSite=Lax';
+        return cand;
+      }
+    }
+    return null;
+  }
+  // Found on the first cookie write, so a visitor the privacy gates stop
+  // never gets even the probe cookie.
+  var cookieDomain;
+
+  function domainForCookies() {
+    if (cookieDomain === undefined) {
+      try { cookieDomain = registrableDomain(); } catch (e) { cookieDomain = null; }
+    }
+    return cookieDomain;
+  }
+
+  // The value a cookie has on the registrable domain, moving an older
+  // host-only copy there. Once a domain copy exists it wins and stays: a
+  // host-only copy is dropped, never written over it, so a visitor seen on
+  // both www.acme.com and acme.com under the old script converges on one id
+  // and keeps it. Without a domain copy, the host-only value moves up as is.
+  // The cookie is written only when there was no domain copy, so its expiry
+  // is not rolled forward by every page.
+  function domainCookie(name, days) {
+    var before = getCookie(name);
+    if (!domainForCookies()) return before;
+    document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax';
+    var onDomain = getCookie(name);
+    if (onDomain) return onDomain;
+    if (before) setCookie(name, before, days);
+    return before;
+  }
+
+  // The visitor cookie lives on the registrable domain, so www.acme.com and
+  // blog.acme.com are one visitor.
   function setCookie(name, value, days) {
     var d = new Date();
     d.setTime(d.getTime() + days * 86400000);
+    var domain = domainForCookies();
     document.cookie =
       name +
       '=' +
       encodeURIComponent(value) +
       '; expires=' +
       d.toUTCString() +
+      (domain ? '; domain=' + domain : '') +
       '; path=/; SameSite=Lax';
   }
   function uuid() {
@@ -170,7 +221,7 @@
   /*  Visitor + session identifiers                                  */
   /* -------------------------------------------------------------- */
 
-  var vid = getCookie(VID_COOKIE);
+  var vid = domainCookie(VID_COOKIE, 365);
   if (!vid) {
     vid = uuid();
     setCookie(VID_COOKIE, vid, 365);
@@ -183,11 +234,11 @@
     freshSession = true;
   }
   if (freshSession && !sessionStorage.getItem(SESSION_FLAG_KEY)) {
-    var prevVisitCount = parseInt(getCookie(VISIT_COUNT_COOKIE) || '0', 10) || 0;
+    var prevVisitCount = parseInt(domainCookie(VISIT_COUNT_COOKIE, 365) || '0', 10) || 0;
     setCookie(VISIT_COUNT_COOKIE, String(prevVisitCount + 1), 365);
     sessionStorage.setItem(SESSION_FLAG_KEY, '1');
   }
-  var visitCount = parseInt(getCookie(VISIT_COUNT_COOKIE) || '1', 10) || 1;
+  var visitCount = parseInt(domainCookie(VISIT_COUNT_COOKIE, 365) || '1', 10) || 1;
 
   /* -------------------------------------------------------------- */
   /*  blueimp-md5 — embedded (public domain).                        */
@@ -606,6 +657,9 @@
       screen_w: screenW,
       screen_h: screenH,
       utm: sessionUtm || undefined,
+      // The page's consent state on every event: the cross-site POST carries
+      // no cookie, so the body is the only way it reaches ingest.
+      consent: consentGranted ? 'granted' : 'absent',
     };
     if (extra) {
       for (var k in extra) {
