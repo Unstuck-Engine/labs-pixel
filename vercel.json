@@ -73,10 +73,6 @@
     {
       "source": "/v1/dashboard-data",
       "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/website-intent-dashboard"
-    },
-    {
-      "source": "/v1/demo/:path*",
-      "destination": "https://dbylvdycfnmsdxlmghhz.supabase.co/functions/v1/demo-webhook-ingest/:path*"
     }
   ],
   "headers": [
@@ -113,15 +109,6 @@
     },
     {
       "source": "/v1/events",
-      "headers": [
-        {
-          "key": "Access-Control-Allow-Origin",
-          "value": "*"
-        }
-      ]
-    },
-    {
-      "source": "/v1/demo/:path*",
       "headers": [
         {
           "key": "Access-Control-Allow-Origin",
